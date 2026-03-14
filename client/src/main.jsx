@@ -1,0 +1,22 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import { Toaster } from 'react-hot-toast';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <App />
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          style: { background: '#282828', color: '#eff1f6', border: '1px solid #3a3a3a', fontFamily: 'Inter' },
+          success: { iconTheme: { primary: '#2cbb5d', secondary: '#282828' } },
+          error:   { iconTheme: { primary: '#ef4743', secondary: '#282828' } },
+        }}
+      />
+    </BrowserRouter>
+  </React.StrictMode>
+);

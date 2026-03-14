@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    background: #1a1a1a;
+    color: #eff1f6;
+    font-family: 'Inter', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1a1a; }
+  ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent text-bg font-bold px-5 py-2 rounded-md border-none cursor-pointer text-sm transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply bg-transparent text-text font-medium px-5 py-2 rounded-md border border-border cursor-pointer text-sm transition-all hover:border-muted active:scale-95 disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply bg-transparent text-hard font-medium px-4 py-1.5 rounded-md border border-hard cursor-pointer text-xs transition-all hover:bg-hard hover:text-white;
+  }
+  .input-field {
+    @apply bg-bg border border-border rounded-lg px-3 py-2.5 text-text text-sm font-sans w-full outline-none transition-colors focus:border-accent;
+  }
+  .panel {
+    @apply bg-panel border border-border rounded-xl;
+  }
+  .diff-pill {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .diff-easy  { @apply bg-easy/15 text-easy; }
+  .diff-medium { @apply bg-medium/15 text-medium; }
+  .diff-hard  { @apply bg-hard/15 text-hard; }
+  .verdict-badge {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold;
+  }
+  .tab-btn {
+    @apply px-4 py-2 rounded-md cursor-pointer text-sm font-medium transition-all text-muted border-none bg-transparent hover:text-text;
+  }
+  .tab-btn.active { @apply bg-border text-text; }
+  .round-tab {
+    @apply px-5 py-3 cursor-pointer text-sm font-semibold border-b-2 border-transparent transition-all text-muted hover:text-text;
+  }
+  .round-tab.active { @apply text-accent border-accent; }
+  .mcq-option {
+    @apply p-3 rounded-lg border-2 border-border cursor-pointer transition-all text-sm hover:border-accent hover:bg-accent/5;
+  }
+  .mcq-option.selected { @apply border-accent bg-accent/10 text-accent; }
+  .mcq-option.correct  { @apply border-easy bg-easy/10 text-easy pointer-events-none; }
+  .mcq-option.wrong    { @apply border-hard bg-hard/10 text-hard pointer-events-none; }
+  .mcq-option.disabled { @apply pointer-events-none opacity-80; }
+  .problem-list-item {
+    @apply flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer text-sm transition-colors hover:bg-border;
+  }
+  .problem-list-item.active { @apply bg-border; }
+  .sidebar-nav-item {
+    @apply flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer transition-colors text-muted hover:bg-border hover:text-text;
+  }
+  .sidebar-nav-item.active { @apply bg-border text-accent; }
+  .code-block {
+    @apply bg-bg border border-border rounded-md p-3 font-mono text-xs overflow-x-auto whitespace-pre;
+  }
+  .tag-pill {
+    @apply bg-border text-muted text-xs px-2 py-0.5 rounded-full;
+  }
+  .admin-table { @apply w-full border-collapse; }
+  .admin-table th { @apply bg-bg px-3 py-2.5 text-left text-xs font-semibold text-muted border-b border-border; }
+  .admin-table td { @apply px-3 py-2.5 text-sm border-b border-border/50; }
+  .admin-table tr:hover td { @apply bg-border/20; }
+}
+
+@layer utilities {
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .slide-up { animation: slideUp 0.2s ease; }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .pulse-dot { animation: pulseDot 1.4s ease-in-out infinite; }
+  @keyframes pulseDot { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
+}
