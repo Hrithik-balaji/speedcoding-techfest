@@ -1,11 +1,9 @@
-require('node:dns/promises').setServers(['8.8.8.8', '8.8.4.4']);
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const path = require('path');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
@@ -60,14 +58,6 @@ app.use('/api/admin',       require('./routes/admin'));
 app.use('/api/exec',        require('./routes/exec'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api/timer',       require('./routes/timer'));
-
-// ── Serve React Build in Production ──────────────────────────
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/dist/index.html'));
-  });
-}
 
 // ── Global Error Handler ──────────────────────────────────────
 app.use((err, req, res, next) => {
