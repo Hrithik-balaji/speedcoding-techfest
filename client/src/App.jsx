@@ -1,8 +1,9 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ExamProvider } from './context/ExamContext';
 import { useAuth } from './hooks/useAuth';
+import WakeUpScreen from './components/WakeUpScreen';
 
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const ExamPage = lazy(() => import('./pages/ExamPage'));
@@ -37,6 +38,12 @@ function AppRoutes() {
 }
 
 export default function App() {
+  const [backendReady, setBackendReady] = useState(false);
+
+  if (!backendReady) {
+    return <WakeUpScreen onReady={() => setBackendReady(true)} />;
+  }
+
   return (
     <AuthProvider>
       <AppRoutes />

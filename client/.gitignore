@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Environment — contains your backend URL
+.env
+.env.local
+
+# Vite build output
+dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store

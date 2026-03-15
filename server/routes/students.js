@@ -3,10 +3,96 @@ const { protect } = require('../middleware/auth');
 const Student = require('../models/Student');
 const ExamState = require('../models/ExamState');
 
+async function resetStudentsForRound(roundNumber) {
+  const r = Number(roundNumber);
+
+  if (r === 1) {
+    await Student.updateMany(
+      {},
+      {
+        currentRound: 1,
+        mcqCompletedAt: null,
+        mcqAnswers: [],
+        mcqCorrectCount: 0,
+        eliminated: false,
+        eliminatedReason: '',
+        debugCompletedAt: null,
+        debugSolvedCount: 0,
+        debugSolvedIds: [],
+        codingCompletedAt: null,
+        codingSolvedCount: 0,
+        totalTimeMs: null,
+        finalRank: null,
+        'r1.answers': {},
+        'r1.score': 0,
+        'r1.submitted': false,
+        'r1.submitTime': null,
+        'r2.solved': [],
+        'r2.score': 0,
+        'r2.penalty': 0,
+        'r2.attempts': {},
+        'r3.solved': [],
+        'r3.score': 0,
+        'r3.penalty': 0,
+        'r3.attempts': {},
+        'r3.totalTime': 0,
+      }
+    );
+  }
+
+  if (r === 2) {
+    await Student.updateMany(
+      { currentRound: 2 },
+      {
+        debugCompletedAt: null,
+        debugSolvedCount: 0,
+        debugSolvedIds: [],
+        eliminated: false,
+        eliminatedReason: '',
+      }
+    );
+  }
+
+  if (r === 3) {
+    await Student.updateMany(
+      { currentRound: 3 },
+      {
+        codingCompletedAt: null,
+        codingSolvedCount: 0,
+        totalTimeMs: null,
+        finalRank: null,
+      }
+    );
+  }
+}
+
 // GET /api/students/me — get own profile + state
 router.get('/me', protect, async (req, res) => {
   try {
     const examState = await ExamState.findById('global');
+
+    // Safety net: when contest is not running, stale elimination flags should not block login flow.
+    if (!examState?.contestStarted && req.student.eliminated) {
+      req.student.eliminated = false;
+      req.student.eliminatedReason = '';
+      req.student.currentRound = 1;
+      await req.student.save();
+    }
+
+    // If round 2 is over and threshold unmet, mark eliminated.
+    const r2End = Number(examState?.roundEndTimes?.r2 || 0);
+    const r2Over = examState?.forceEnded?.r2 === true || (r2End > 0 && Date.now() >= r2End);
+    if (
+      Number(req.student.currentRound || 0) === 2 &&
+      !req.student.eliminated &&
+      r2Over &&
+      Number(req.student.debugSolvedCount || 0) < 2
+    ) {
+      req.student.eliminated = true;
+      req.student.eliminatedReason = 'Did not pass Round 2';
+      await req.student.save();
+    }
+
     res.json({ student: req.student, examState });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -31,21 +117,33 @@ router.patch('/me/heartbeat', protect, async (req, res) => {
 // POST /api/students/me/violation — report a violation
 router.post('/me/violation', protect, async (req, res) => {
   try {
-    const { type, round } = req.body;
+    const { type, description, round } = req.body;
     const student = req.student;
+    console.log('Violation received:', req.body, 'Student:', String(student?._id || req.user?.id || 'unknown'));
 
-    student.violations.push({ type, round });
+    if (!type || !String(type).trim()) {
+      return res.status(400).json({ error: 'Violation type is required' });
+    }
 
-    // Auto-warn on first violation
-    const nonKickViolations = student.violations.filter(v =>
-      !v.type.includes('Kicked')
-    );
-    if (nonKickViolations.length >= 1 && student.status === 'Active') {
-      student.status = 'Warned';
+    student.violationCount = Number(student.violationCount || 0) + 1;
+    student.violations.push({
+      type: String(type).trim(),
+      timestamp: new Date(),
+      description: String(description || '').trim(),
+      round: Number(round || 0),
+    });
+
+    if (student.violationCount >= 1) {
+      student.terminated = true;
+      student.terminatedReason = String(type).trim();
+      student.status = 'Kicked';
     }
 
     await student.save();
-    res.json({ status: student.status, warned: nonKickViolations.length >= 1 });
+    res.json({
+      terminated: Boolean(student.terminated),
+      violationCount: Number(student.violationCount || 0),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -54,31 +152,69 @@ router.post('/me/violation', protect, async (req, res) => {
 // POST /api/students/me/mcq-submit — submit MCQ round
 router.post('/me/mcq-submit', protect, async (req, res) => {
   try {
-    const { answers } = req.body; // { questionId: selectedIndex }
+    const { answers } = req.body;
     const student = req.student;
 
     if (student.r1.submitted)
       return res.status(400).json({ error: 'MCQ already submitted' });
 
-    // Score is computed server-side
     const { MCQ } = require('../models/Problem');
-    const questions = await MCQ.find();
+    const questions = await MCQ.find().select('_id correct');
 
-    let score = 0;
-    questions.forEach(q => {
-      const ans = answers?.[q._id.toString()];
-      if (ans === undefined || ans === null) return;
-      if (ans === q.correct) score += q.points;
-      else score -= 0.25;
-    });
+    // Supports either:
+    // 1) object map: { [questionId]: selectedAnswer }
+    // 2) array: [{ questionId, selectedAnswer }]
+    const normalizedAnswers = Array.isArray(answers)
+      ? answers
+          .map((a) => ({
+            questionId: String(a?.questionId || '').trim(),
+            selectedAnswer: Number(a?.selectedAnswer),
+          }))
+          .filter((a) => a.questionId && Number.isInteger(a.selectedAnswer))
+      : Object.entries(answers || {}).map(([questionId, selectedAnswer]) => ({
+          questionId: String(questionId),
+          selectedAnswer: Number(selectedAnswer),
+        })).filter((a) => a.questionId && Number.isInteger(a.selectedAnswer));
 
-    student.r1.answers    = answers || {};
-    student.r1.score      = Math.max(0, parseFloat(score.toFixed(2)));
+    const answerMap = new Map(normalizedAnswers.map((a) => [a.questionId, a.selectedAnswer]));
+
+    const mcqAnswers = [];
+    let mcqCorrectCount = 0;
+    let mcqScore = 0;
+    for (const q of questions) {
+      const selectedAnswer = answerMap.get(String(q._id));
+      if (!Number.isInteger(selectedAnswer)) continue;
+      const isCorrect = selectedAnswer === Number(q.correct);
+      if (isCorrect) mcqCorrectCount += 1;
+      mcqScore += isCorrect ? 4 : -2;
+      mcqAnswers.push({
+        questionId: q._id,
+        selectedAnswer,
+        correct: isCorrect,
+      });
+    }
+
+    student.mcqAnswers = mcqAnswers;
+    student.mcqCorrectCount = mcqCorrectCount;
+
+    student.r1.answers = Object.fromEntries(answerMap.entries());
+    student.r1.score = mcqScore;
     student.r1.submitted  = true;
     student.r1.submitTime = new Date();
-    await student.save();
+    student.mcqCompletedAt = new Date();
 
-    res.json({ score: student.r1.score, submitted: true });
+    if (mcqCorrectCount >= 5) {
+      student.currentRound = 2;
+      student.eliminated = false;
+      student.eliminatedReason = '';
+      await student.save();
+      return res.json({ promoted: true, nextRound: 2 });
+    }
+
+    student.eliminated = true;
+    student.eliminatedReason = 'Did not pass Round 1';
+    await student.save();
+    res.json({ promoted: false, eliminated: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -98,3 +234,4 @@ router.get('/me/submissions', protect, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.resetStudentsForRound = resetStudentsForRound;

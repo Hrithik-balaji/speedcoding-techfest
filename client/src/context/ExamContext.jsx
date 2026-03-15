@@ -11,24 +11,40 @@ export function ExamProvider({ children }) {
   const [mcqs, setMcqs]               = useState([]);
   const [debugProblems, setDebugProbs] = useState([]);
   const [codingProblems, setCodingProbs] = useState([]);
-  const [currentRound, setCurrentRound] = useState(1);
+  const [currentRound, setCurrentRound] = useState(() => student?.currentRound || 1);
   const [paused, setPaused]           = useState(false);
   const [timeLeft, setTimeLeft]       = useState(null); // ms
+  const [problemErrors, setProblemErrors] = useState({ mcq: null, debug: null, coding: null });
+  const [problemsLoading, setProblemsLoading] = useState(false);
   const timerRef                      = useRef(null);
   const pollRef                       = useRef(null);
 
-  // Load all problems
+  // Load all problems — each endpoint is fetched independently so a 403
+  // (round not yet unlocked) on one endpoint doesn't prevent the others loading.
   const loadProblems = useCallback(async () => {
-    try {
-      const [m, d, c] = await Promise.all([
-        api.get('/problems/mcq'),
-        api.get('/problems/debug'),
-        api.get('/problems/coding'),
-      ]);
-      setMcqs(m.data);
-      setDebugProbs(d.data);
-      setCodingProbs(c.data);
-    } catch (err) { console.error('Failed to load problems', err); }
+    setProblemsLoading(true);
+    const fetchOne = async (url) => {
+      try {
+        const { data } = await api.get(url);
+        return { data, error: null };
+      } catch (err) {
+        const msg = err.response?.data?.error || 'Failed to load questions';
+        console.warn('[ExamContext] fetch error for', url, msg);
+        return { data: null, error: msg };
+      }
+    };
+    const [m, d, c] = await Promise.all([
+      fetchOne('/problems/mcq'),
+      fetchOne('/problems/debug'),
+      fetchOne('/problems/coding'),
+    ]);
+    if (m.data) { setMcqs(m.data);      setProblemErrors(prev => ({ ...prev, mcq:   null })); }
+    else        {                        setProblemErrors(prev => ({ ...prev, mcq:   m.error })); }
+    if (d.data) { setDebugProbs(d.data); setProblemErrors(prev => ({ ...prev, debug: null })); }
+    else        {                        setProblemErrors(prev => ({ ...prev, debug: d.error })); }
+    if (c.data) { setCodingProbs(c.data); setProblemErrors(prev => ({ ...prev, coding: null })); }
+    else        {                         setProblemErrors(prev => ({ ...prev, coding: c.error })); }
+    setProblemsLoading(false);
   }, []);
 
   // Poll timer state from server every 3s
@@ -56,6 +72,13 @@ export function ExamProvider({ children }) {
     return () => clearInterval(pollRef.current);
   }, [student, pollTimer, loadProblems]);
 
+  useEffect(() => {
+    if (!student) return;
+    if (Number(student.currentRound || 1) !== Number(currentRound || 1)) {
+      setCurrentRound(Number(student.currentRound || 1));
+    }
+  }, [student, currentRound]);
+
   // Local countdown
   useEffect(() => {
     clearInterval(timerRef.current);
@@ -76,6 +99,17 @@ export function ExamProvider({ children }) {
     return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   };
 
+  const resetExamState = useCallback(() => {
+    setExamState(null);
+    setMcqs([]);
+    setDebugProbs([]);
+    setCodingProbs([]);
+    setCurrentRound(student?.currentRound || 1);
+    setPaused(false);
+    setTimeLeft(null);
+    setProblemErrors({ mcq: null, debug: null, coding: null });
+  }, [student]);
+
   return (
     <ExamContext.Provider value={{
       examState, setExamState,
@@ -84,6 +118,9 @@ export function ExamProvider({ children }) {
       paused,
       timeLeft, formatTime,
       loadProblems,
+      problemErrors,
+      problemsLoading,
+      resetExamState,
     }}>
       {children}
     </ExamContext.Provider>

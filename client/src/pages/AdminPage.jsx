@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
+import QuestionModal from '../components/admin/QuestionModal';
 
 const COLORS = {
   bg: '#0B1120',
@@ -17,8 +18,8 @@ const COLORS = {
 const MENU = [
   { key: 'students', label: 'Students', icon: 'users' },
   { key: 'violations', label: 'Violations', icon: 'warning' },
-  { key: 'override', label: 'Score Override', icon: 'edit' },
   { key: 'bank', label: 'Question Bank', icon: 'book' },
+  { key: 'import', label: 'Import Questions', icon: 'upload' },
   { key: 'leaderboard', label: 'Leaderboard', icon: 'trophy' },
   { key: 'settings', label: 'Contest Settings', icon: 'settings' },
 ];
@@ -40,6 +41,8 @@ function Icon({ name, className = 'w-4 h-4' }) {
   if (name === 'eye') return <svg {...common}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" /><circle cx="12" cy="12" r="3" /></svg>;
   if (name === 'warn') return <svg {...common}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3l-8.47-14.14a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>;
   if (name === 'kick') return <svg {...common}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>;
+  if (name === 'upload') return <svg {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>;
+  if (name === 'download') return <svg {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>;
   return <svg {...common}><circle cx="12" cy="12" r="10" /></svg>;
 }
 
@@ -93,6 +96,27 @@ function formatAgo(ts) {
   return `${h}h ago`;
 }
 
+function formatRemainingMs(ms) {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  const totalSec = Math.floor(safeMs / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+function formatClock(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+}
+
+function roundStatusLabel(status) {
+  if (!status?.contestStarted || Number(status?.currentRound || 0) === 0) {
+    return 'Round 0 - Not Started';
+  }
+  return `Round ${status.currentRound} - ${status.roundActive ? 'Active' : 'Stopped'}`;
+}
+
 function contestStateLabel(state) {
   const now = Date.now();
   const allEnded = state?.forceEnded?.r1 && state?.forceEnded?.r2 && state?.forceEnded?.r3;
@@ -104,6 +128,42 @@ function contestStateLabel(state) {
   return { text: 'Waiting to Start', className: 'bg-amber-500/15 text-amber-300 border-amber-500/30' };
 }
 
+const IMPORT_TEMPLATES = {
+  mcq: {
+    filename: 'mcq_template.json',
+    data: [{ question: 'What does HTML stand for?', options: ['Hyper Text Markup Language', 'High Tech Modern Language', 'Hyper Transfer Markup Logic', 'Home Tool Markup Language'], correctAnswer: 0, points: 1 }],
+  },
+  debug: {
+    filename: 'debug_template.json',
+    data: [{ title: 'Fix the Loop', description: 'The loop should print numbers 1 to 5 but it starts from 0.', brokenCode: 'for i in range(6):\n    print(i)', expectedOutput: '1\n2\n3\n4\n5', hint: 'Check where the range starts', sampleInput: '', points: 1, allowedLanguages: ['python'] }],
+  },
+  coding: {
+    filename: 'coding_template.json',
+    data: [{ title: 'Sum of Two Numbers', description: 'Given two integers A and B on one line separated by a space, print their sum.', sampleInput: '3 5', sampleOutput: '8', constraints: '1 ≤ A, B ≤ 100', testCases: [{ input: '3 5', output: '8' }, { input: '0 0', output: '0' }, { input: '-1 1', output: '0' }], points: 1, allowedLanguages: ['python', 'cpp', 'java'] }],
+  },
+};
+
+function downloadJsonTemplate(key) {
+  const t = IMPORT_TEMPLATES[key];
+  if (!t) return;
+  const blob = new Blob([JSON.stringify(t.data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = t.filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+const ALL_LANGS = ['python', 'cpp', 'c', 'java', 'javascript'];
+const LANG_LABELS = { python: 'Python 3', cpp: 'C++17', c: 'C', java: 'Java', javascript: 'JS' };
+const QM_LANG_LABELS = { python: 'Python', cpp: 'C++', c: 'C', java: 'Java' };
+
+function truncateText(text, max) {
+  const value = String(text || '');
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
 export default function AdminPage() {
   const navigate = useNavigate();
   const { isAdmin, adminLogin, adminLogout, setLoading } = useAuth();
@@ -112,16 +172,53 @@ export default function AdminPage() {
   const [violations, setViolations] = useState([]);
   const [events, setEvents] = useState([]);
   const [contestState, setContestState] = useState(null);
+  const [timerStatus, setTimerStatus] = useState(null);
+  const [roundStatus, setRoundStatus] = useState(null);
+  const [finishers, setFinishers] = useState([]);
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [activeMenu, setActiveMenu] = useState('students');
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [roundActionLoading, setRoundActionLoading] = useState('');
+  const [restartRoundLoading, setRestartRoundLoading] = useState(null);
+  const [restartConfirmRound, setRestartConfirmRound] = useState(null);
+  const [showRoundHistory, setShowRoundHistory] = useState(false);
+  const [bankData, setBankData] = useState({ mcq: [], debug: [], coding: [] });
+  const [bankLoading, setBankLoading] = useState(false);
+  const [langEdits, setLangEdits] = useState({});
+  const [langSaving, setLangSaving] = useState({});
+  const [importTab, setImportTab] = useState('mcq');
+  const [importParsed, setImportParsed] = useState({ mcq: null, debug: null, coding: null });
+  const [importParseError, setImportParseError] = useState({ mcq: null, debug: null, coding: null });
+  const [importResult, setImportResult] = useState({ mcq: null, debug: null, coding: null });
+  const [importLoading, setImportLoading] = useState(false);
+  const [importFileKey, setImportFileKey] = useState(0);
+
+  const [qmTab, setQmTab] = useState('mcq');
+  const [mcqQuestions, setMcqQuestions] = useState([]);
+  const [debugQuestions, setDebugQuestions] = useState([]);
+  const [codingQuestions, setCodingQuestions] = useState([]);
+  const [qmLoading, setQmLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalType, setModalType] = useState(null);
+  const [editingQuestion, setEditingQuestion] = useState(null);
+
+  const [qmLoaded, setQmLoaded] = useState({ mcq: false, debug: false, coding: false });
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteLoadingId, setDeleteLoadingId] = useState('');
+  const [fadingRows, setFadingRows] = useState({});
 
   const fetchContestState = useCallback(async () => {
     const { data } = await api.get('/admin/state');
     setContestState(data);
+    return data;
+  }, []);
+
+  const fetchTimerStatus = useCallback(async () => {
+    const { data } = await api.get('/timer/status');
+    setTimerStatus(data);
     return data;
   }, []);
 
@@ -143,12 +240,14 @@ export default function AdminPage() {
       api.get('/submissions/admin/all'),
     ]);
 
-    const vEvents = (vio.data || []).slice(0, 50).map((v) => ({
-      id: `v-${v.rollNo}-${v.timestamp}`,
-      time: new Date(v.timestamp).getTime(),
-      text: `${v.name} ${v.type.toLowerCase()}`,
-      kind: 'violation',
-    }));
+    const vEvents = (vio.data || [])
+      .flatMap((s) => (s.violations || []).map((v) => ({
+        id: `v-${s.rollNo}-${v.timestamp}`,
+        time: new Date(v.timestamp).getTime(),
+        text: `${s.studentName} ${String(v.type || '').replace(/_/g, ' ')}`,
+        kind: 'violation',
+      })))
+      .slice(0, 50);
 
     const sEvents = (subs.data || []).slice(0, 50).map((s) => ({
       id: `s-${s._id}`,
@@ -164,16 +263,117 @@ export default function AdminPage() {
     setEvents(merged);
   }, []);
 
+  const fetchQuestionBank = useCallback(async () => {
+    setBankLoading(true);
+    try {
+      const [mcq, debug, coding] = await Promise.all([
+        api.get('/problems/admin/mcq'),
+        api.get('/problems/admin/debug'),
+        api.get('/problems/admin/coding'),
+      ]);
+      setBankData({
+        mcq: mcq.data || [],
+        debug: debug.data || [],
+        coding: coding.data || [],
+      });
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load question bank');
+    } finally {
+      setBankLoading(false);
+    }
+  }, []);
+
+  const setQuestionsByType = useCallback((type, rows) => {
+    if (type === 'mcq') setMcqQuestions(rows || []);
+    if (type === 'debug') setDebugQuestions(rows || []);
+    if (type === 'coding') setCodingQuestions(rows || []);
+  }, []);
+
+  const fetchQuestionsForType = useCallback(async (type, force = false) => {
+    if (!force && qmLoaded[type]) return;
+    setQmLoading(true);
+    try {
+      const { data } = await api.get(`/problems/admin/problems/${type}`);
+      setQuestionsByType(type, Array.isArray(data) ? data : []);
+      setQmLoaded((prev) => ({ ...prev, [type]: true }));
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load questions');
+    } finally {
+      setQmLoading(false);
+    }
+  }, [qmLoaded, setQuestionsByType]);
+
+  const openAddModal = (type) => {
+    setModalType(type);
+    setEditingQuestion(null);
+    setModalOpen(true);
+  };
+
+  const openEditModal = (type, question) => {
+    setModalType(type);
+    setEditingQuestion(question);
+    setModalOpen(true);
+  };
+
+  const closeQuestionModal = () => {
+    setModalOpen(false);
+    setModalType(null);
+    setEditingQuestion(null);
+  };
+
+  const handleQuestionSaved = async (type) => {
+    await fetchQuestionsForType(type, true);
+  };
+
+  const runDeleteQuestion = async () => {
+    if (!deleteConfirm?.id || !deleteConfirm?.type) return;
+    const { id, type } = deleteConfirm;
+    setDeleteLoadingId(id);
+    try {
+      await api.delete(`/problems/admin/problems/${type}/${id}`);
+      setFadingRows((prev) => ({ ...prev, [id]: true }));
+      setDeleteConfirm(null);
+      setTimeout(async () => {
+        await fetchQuestionsForType(type, true);
+      }, 220);
+      toast.success('Question deleted');
+    } catch {
+      toast.error('Failed to delete. Try again.');
+    } finally {
+      setDeleteLoadingId('');
+    }
+  };
+
+  const fetchRoundStatus = useCallback(async () => {
+    const { data } = await api.get('/admin/round-status');
+    setRoundStatus(data);
+    return data;
+  }, []);
+
+  const fetchFinishers = useCallback(async () => {
+    const { data } = await api.get('/leaderboard');
+    setFinishers(Array.isArray(data) ? data : []);
+    return data;
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setBusy(true);
     try {
-      await Promise.all([fetchStudents(), fetchViolations(), fetchContestState(), fetchEvents()]);
+      await Promise.all([
+        fetchStudents(),
+        fetchViolations(),
+        fetchContestState(),
+        fetchEvents(),
+        fetchTimerStatus(),
+        fetchRoundStatus(),
+        fetchFinishers(),
+      ]);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to refresh dashboard');
     } finally {
       setBusy(false);
     }
-  }, [fetchContestState, fetchEvents, fetchStudents, fetchViolations]);
+  }, [fetchContestState, fetchEvents, fetchFinishers, fetchRoundStatus, fetchStudents, fetchTimerStatus, fetchViolations]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -181,9 +381,33 @@ export default function AdminPage() {
     const id = setInterval(() => {
       fetchEvents().catch(() => {});
       fetchStudents().catch(() => {});
-    }, 8000);
+      fetchViolations().catch(() => {});
+    }, 10000);
     return () => clearInterval(id);
-  }, [isAdmin, refreshAll, fetchEvents, fetchStudents]);
+  }, [isAdmin, refreshAll, fetchEvents, fetchStudents, fetchViolations]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const id = setInterval(() => {
+      fetchTimerStatus().catch(() => {});
+      fetchRoundStatus().catch(() => {});
+      fetchFinishers().catch(() => {});
+    }, 15000);
+    return () => clearInterval(id);
+  }, [fetchTimerStatus, fetchRoundStatus, fetchFinishers, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (activeMenu === 'bank') {
+      fetchQuestionBank();
+    }
+  }, [activeMenu, fetchQuestionBank, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (activeMenu !== 'import') return;
+    fetchQuestionsForType(qmTab);
+  }, [activeMenu, fetchQuestionsForType, isAdmin, qmTab]);
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -207,11 +431,26 @@ export default function AdminPage() {
       return s.status !== 'Kicked' && seenMs <= 2 * 60 * 1000;
     }).length;
     const totalV = students.reduce((acc, s) => acc + (s.violations?.length || 0), 0);
-    const avg = total
-      ? (students.reduce((acc, s) => acc + (Number(s.r1?.score || 0) + Number(s.r2?.score || 0) + Number(s.r3?.score || 0)), 0) / total)
-      : 0;
-    return { total, active, totalV, avg: avg.toFixed(2) };
+    return { total, active, totalV };
   }, [students]);
+
+  const violationSummary = useMemo(() => {
+    const terminated = (violations || []).filter((v) => v.terminated).length;
+    const warnings = (violations || []).filter((v) => !v.terminated && Number(v.violationCount || 0) > 0).length;
+    return { terminated, warnings };
+  }, [violations]);
+
+  const qmCounts = useMemo(() => ({
+    mcq: mcqQuestions.length,
+    debug: debugQuestions.length,
+    coding: codingQuestions.length,
+  }), [mcqQuestions.length, debugQuestions.length, codingQuestions.length]);
+
+  const activeQmQuestions = useMemo(() => {
+    if (qmTab === 'mcq') return mcqQuestions;
+    if (qmTab === 'debug') return debugQuestions;
+    return codingQuestions;
+  }, [qmTab, mcqQuestions, debugQuestions, codingQuestions]);
 
   const onAdminLogin = (password) => async (e) => {
     e.preventDefault();
@@ -227,12 +466,15 @@ export default function AdminPage() {
   };
 
   const act = async (fn, msg) => {
+    setBusy(true);
     try {
       await fn();
       toast.success(msg);
       await refreshAll();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Action failed');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -240,13 +482,56 @@ export default function AdminPage() {
   const kickStudent = (id) => act(() => api.patch(`/admin/students/${id}/kick`), 'Student kicked');
   const reinstateStudent = (id) => act(() => api.patch(`/admin/students/${id}/reinstate`, { reason: 'Manual reinstatement' }), 'Student reinstated');
 
-  const startContest = () => act(async () => {
-    await Promise.all([
-      api.post('/timer/start-round', { round: 1 }),
-      api.post('/timer/start-round', { round: 2 }),
-      api.post('/timer/start-round', { round: 3 }),
-    ]);
-  }, 'Contest started');
+  const reinstateFromViolationRow = (row) => {
+    const ok = window.confirm(`Reinstate ${row.studentName}? They will be able to continue the exam.`);
+    if (!ok) return;
+    reinstateStudent(row._id);
+  };
+
+  const runRoundAction = async (actionKey, fn, successMessage) => {
+    setRoundActionLoading(actionKey);
+    try {
+      await fn();
+      toast.success(successMessage);
+      await fetchTimerStatus();
+      await fetchContestState();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Round action failed');
+    } finally {
+      setRoundActionLoading('');
+    }
+  };
+
+  const startRound = () => runRoundAction('start', () => api.post('/timer/start-round'), 'Round started');
+  const startContest = startRound;
+  const stopRound = () => runRoundAction('stop', () => api.post('/timer/stop-round'), 'Round stopped');
+  const nextRound = () => {
+    const ok = window.confirm('Move to next round? This cannot be undone.');
+    if (!ok) return;
+    runRoundAction('next', () => api.post('/timer/next-round'), 'Moved to next round');
+  };
+
+  const openRestartConfirm = (round) => {
+    setRestartConfirmRound(round);
+  };
+
+  const restartRoundConfirmed = async () => {
+    const round = Number(restartConfirmRound || 0);
+    if (![1, 2, 3].includes(round)) return;
+
+    setRestartRoundLoading(round);
+    try {
+      await api.post('/timer/restart-round', { round });
+      toast.success(`Round ${round} has been restarted successfully`);
+      await fetchTimerStatus();
+      await fetchContestState();
+      setRestartConfirmRound(null);
+    } catch {
+      toast.error('Failed to restart round. Please try again.');
+    } finally {
+      setRestartRoundLoading(null);
+    }
+  };
 
   const pauseContest = () => act(() => api.patch('/timer/pause'), contestState?.paused ? 'Contest resumed' : 'Contest paused');
   const endContest = () => act(async () => {
@@ -258,6 +543,54 @@ export default function AdminPage() {
   }, 'Contest ended');
   const resetContest = () => act(() => api.post('/timer/reset'), 'Contest reset to waiting state');
 
+  const handleImportFile = (type, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportResult(prev => ({ ...prev, [type]: null }));
+    setImportParseError(prev => ({ ...prev, [type]: null }));
+    setImportParsed(prev => ({ ...prev, [type]: null }));
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const raw = JSON.parse(ev.target.result);
+        const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.questions) ? raw.questions : null);
+        if (!arr) throw new Error('JSON must be an array or { questions: [...] }');
+        if (arr.length === 0) throw new Error('File contains no questions');
+        if (arr.length > 50) throw new Error(`Maximum 50 questions per import. File has ${arr.length}.`);
+        setImportParsed(prev => ({ ...prev, [type]: arr }));
+      } catch (err) {
+        setImportParseError(prev => ({ ...prev, [type]: err.message }));
+      }
+    };
+    reader.onerror = () => setImportParseError(prev => ({ ...prev, [type]: 'Failed to read file' }));
+    reader.readAsText(file);
+  };
+
+  const handleImportAll = async (type) => {
+    const questions = importParsed[type];
+    if (!questions?.length || importLoading) return;
+    setImportLoading(true);
+    setImportResult(prev => ({ ...prev, [type]: null }));
+    try {
+      const { data } = await api.post(`/problems/import/${type}`, { questions });
+      setImportResult(prev => ({ ...prev, [type]: { ...data, ok: true } }));
+      if (data.imported > 0) {
+        toast.success(`Imported ${data.imported} questions`);
+        fetchQuestionBank();
+      }
+      if (data.failed === 0) {
+        setImportParsed(prev => ({ ...prev, [type]: null }));
+        setImportFileKey(k => k + 1);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error || 'Import failed';
+      setImportResult(prev => ({ ...prev, [type]: { ok: false, error: msg } }));
+      toast.error(msg);
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
   if (!isAdmin) {
     return <LoginGate onLogin={onAdminLogin} loading={busy} />;
   }
@@ -265,8 +598,8 @@ export default function AdminPage() {
   const stateBadge = contestStateLabel(contestState);
 
   return (
-    <div className="min-h-screen flex" style={{ background: COLORS.bg, color: COLORS.text, fontFamily: "'Inter', sans-serif" }}>
-      <aside className="w-64 shrink-0 p-4 border-r flex flex-col" style={{ background: '#0f172a', borderColor: COLORS.border }}>
+    <div className="h-screen overflow-hidden flex" style={{ background: COLORS.bg, color: COLORS.text, fontFamily: "'Inter', sans-serif" }}>
+      <aside className="w-64 shrink-0 p-4 border-r flex flex-col overflow-y-auto" style={{ background: '#0f172a', borderColor: COLORS.border }}>
         <div className="rounded-xl p-4 border" style={{ background: COLORS.card, borderColor: COLORS.border }}>
           <div className="text-xs uppercase tracking-[0.18em]" style={{ color: COLORS.accent }}>Control Center</div>
           <h1 className="text-lg font-bold mt-2">Speeding Coding Admin</h1>
@@ -309,9 +642,196 @@ export default function AdminPage() {
       </aside>
 
       <main className="flex-1 p-5 md:p-6 overflow-y-auto">
+        <section className="rounded-2xl border p-4 mb-5" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+          <h3 className="text-base font-semibold mb-3">Round Control</h3>
+          <div className="flex flex-wrap items-center gap-2 text-sm mb-3" style={{ color: COLORS.muted }}>
+            <span className="px-2 py-1 rounded border" style={{ borderColor: COLORS.border, color: COLORS.text }}>
+              {roundStatusLabel(timerStatus)}
+            </span>
+            <span>Current Round: <strong style={{ color: COLORS.text }}>{Number(timerStatus?.currentRound || 0)}</strong></span>
+            <span>State: <strong style={{ color: COLORS.text }}>{timerStatus?.roundActive ? 'Active' : (timerStatus?.contestStarted ? 'Inactive' : 'Not Started')}</strong></span>
+            <span>Remaining: <strong style={{ color: COLORS.text }}>{formatRemainingMs(timerStatus?.remainingMs)}</strong></span>
+            <span>Connected Students: <strong style={{ color: COLORS.text }}>{contestState?.connectedStudents ?? summary.active}</strong></span>
+          </div>
+          <p className="text-sm mb-4" style={{ color: COLORS.muted }}>
+            {roundStatusLabel(timerStatus)}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={startRound}
+              disabled={Boolean(roundActionLoading) || timerStatus?.roundActive}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', border: '1px solid rgba(34,197,94,0.35)' }}
+            >
+              <Icon name={roundActionLoading === 'start' ? 'refresh' : 'play'} className={`w-4 h-4 ${roundActionLoading === 'start' ? 'animate-spin' : ''}`} />
+              ▶ Start Round
+            </button>
+            <button
+              onClick={stopRound}
+              disabled={Boolean(roundActionLoading) || !timerStatus?.roundActive}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: 'rgba(239,68,68,0.16)', color: '#fecaca', border: '1px solid rgba(239,68,68,0.35)' }}
+            >
+              <Icon name={roundActionLoading === 'stop' ? 'refresh' : 'stop'} className={`w-4 h-4 ${roundActionLoading === 'stop' ? 'animate-spin' : ''}`} />
+              ⏹ Stop Round
+            </button>
+            <button
+              onClick={nextRound}
+              disabled={Boolean(roundActionLoading)}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: 'rgba(59,130,246,0.16)', color: '#bfdbfe', border: '1px solid rgba(59,130,246,0.35)' }}
+            >
+              <Icon name={roundActionLoading === 'next' ? 'refresh' : 'play'} className={`w-4 h-4 ${roundActionLoading === 'next' ? 'animate-spin' : ''}`} />
+              → Next Round
+            </button>
+          </div>
+
+          <div className="mt-5 pt-4 border-t" style={{ borderColor: COLORS.border }}>
+            <h4 className="text-sm font-semibold mb-3" style={{ color: '#fcd34d' }}>Restart a Round</h4>
+            <div className="flex flex-wrap gap-2">
+              {[1, 2, 3].map((round) => {
+                const isLoading = restartRoundLoading === round;
+                const started = timerStatus?.hasRoundStarted || {};
+                const disabledByPrereq =
+                  !timerStatus?.contestStarted ||
+                  (round === 2 && !started.r1) ||
+                  (round === 3 && !started.r2);
+                const disabled = Boolean(restartRoundLoading) || disabledByPrereq;
+
+                return (
+                  <button
+                    key={round}
+                    onClick={() => openRestartConfirm(round)}
+                    disabled={disabled}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ background: 'rgba(245,158,11,0.16)', color: '#fde68a', border: '1px solid rgba(245,158,11,0.35)' }}
+                  >
+                    <Icon name={isLoading ? 'refresh' : 'reset'} className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                    {isLoading ? 'Restarting...' : `↺ Restart Round ${round}`}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4">
+              <button
+                onClick={() => setShowRoundHistory((prev) => !prev)}
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold"
+                style={{ borderColor: COLORS.border, color: COLORS.muted }}
+              >
+                {showRoundHistory ? 'Hide Round History' : 'Show Round History'}
+              </button>
+
+              {showRoundHistory && (
+                <div className="mt-3 overflow-auto rounded-xl border" style={{ borderColor: COLORS.border }}>
+                  <table className="w-full text-sm min-w-[640px]">
+                    <thead style={{ background: '#0f172a' }}>
+                      <tr>
+                        {['Round', 'Started at', 'Ended at', 'Restarted at'].map((h) => (
+                          <th key={h} className="text-left px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(timerStatus?.roundHistory || []).map((row, idx) => (
+                        <tr key={`${row.round}-${row.startedAt || row.restartedAt || idx}`} className="border-t" style={{ borderColor: COLORS.border }}>
+                          <td className="px-3 py-3">Round {row.round}</td>
+                          <td className="px-3 py-3" style={{ color: COLORS.muted }}>{formatClock(row.startedAt)}</td>
+                          <td className="px-3 py-3" style={{ color: COLORS.muted }}>{formatClock(row.endedAt)}</td>
+                          <td className="px-3 py-3" style={{ color: COLORS.muted }}>{formatClock(row.restartedAt)}</td>
+                        </tr>
+                      ))}
+                      {!(timerStatus?.roundHistory || []).length && (
+                        <tr>
+                          <td colSpan={4} className="px-3 py-6 text-center" style={{ color: COLORS.muted }}>No round history yet.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border p-4 mb-5" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-base font-semibold">Contest Progress</h3>
+            <button
+              onClick={async () => {
+                try {
+                  await fetchFinishers();
+                  toast.success('Rankings recalculated');
+                } catch (err) {
+                  toast.error(err.response?.data?.error || 'Failed to recalculate rankings');
+                }
+              }}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', border: '1px solid rgba(34,197,94,0.35)' }}
+            >
+              <Icon name="refresh" className="w-3.5 h-3.5" />
+              Recalculate Rankings
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-4 text-sm">
+            <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+              <div style={{ color: COLORS.muted }}>Round 1</div>
+              <div className="font-semibold">{roundStatus?.round1?.total ?? 0} competing</div>
+              <div className="text-xs" style={{ color: '#86efac' }}>{roundStatus?.round1?.promoted ?? 0} promoted</div>
+              <div className="text-xs" style={{ color: '#fca5a5' }}>{roundStatus?.round1?.eliminated ?? 0} eliminated</div>
+            </div>
+            <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+              <div style={{ color: COLORS.muted }}>Round 2</div>
+              <div className="font-semibold">{roundStatus?.round2?.total ?? 0} competing</div>
+              <div className="text-xs" style={{ color: '#86efac' }}>{roundStatus?.round2?.promoted ?? 0} promoted</div>
+              <div className="text-xs" style={{ color: '#fca5a5' }}>{roundStatus?.round2?.eliminated ?? 0} eliminated</div>
+            </div>
+            <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+              <div style={{ color: COLORS.muted }}>Round 3</div>
+              <div className="font-semibold">{roundStatus?.round3?.total ?? 0} competing</div>
+              <div className="text-xs" style={{ color: '#86efac' }}>{roundStatus?.round3?.finished ?? 0} finished</div>
+            </div>
+            <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+              <div style={{ color: COLORS.muted }}>Not Started</div>
+              <div className="font-semibold">{roundStatus?.notStarted ?? 0} students</div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border overflow-hidden" style={{ borderColor: COLORS.border }}>
+            <table className="w-full text-sm min-w-[420px]">
+              <thead style={{ background: '#0f172a' }}>
+                <tr>
+                  <th className="text-left px-3 py-2 font-semibold" style={{ color: '#cbd5e1' }}>Rank</th>
+                  <th className="text-left px-3 py-2 font-semibold" style={{ color: '#cbd5e1' }}>Name</th>
+                  <th className="text-left px-3 py-2 font-semibold" style={{ color: '#cbd5e1' }}>Roll No</th>
+                  <th className="text-left px-3 py-2 font-semibold" style={{ color: '#cbd5e1' }}>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {finishers.map((f) => (
+                  <tr key={`${f.rollNo}-${f.rank}`} className="border-t" style={{ borderColor: COLORS.border }}>
+                    <td className="px-3 py-2">{f.rank}</td>
+                    <td className="px-3 py-2">{f.name}</td>
+                    <td className="px-3 py-2" style={{ color: COLORS.muted }}>{f.rollNo}</td>
+                    <td className="px-3 py-2 font-mono">{f.totalTimeFormatted}</td>
+                  </tr>
+                ))}
+                {!finishers.length && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-6 text-center" style={{ color: COLORS.muted }}>
+                      No finishers yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <div className="flex flex-wrap items-center gap-3 mb-5">
           <div>
-            <h2 className="text-2xl font-bold">Students ({filteredStudents.length})</h2>
+            <h2 className="text-2xl font-bold">{MENU.find((m) => m.key === activeMenu)?.label || 'Admin Panel'}</h2>
             <p className="text-sm" style={{ color: COLORS.muted }}>Live monitoring and contest controls</p>
           </div>
           <div className="ml-auto flex items-center gap-3">
@@ -330,28 +850,30 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
-          {[
-            { icon: 'users', label: 'Total Students', value: summary.total },
-            { icon: 'play', label: 'Active Students', value: summary.active },
-            { icon: 'warning', label: 'Total Violations', value: summary.totalV },
-            { icon: 'trophy', label: 'Average Score', value: summary.avg },
-          ].map((c) => (
-            <div
-              key={c.label}
-              className="rounded-2xl border p-4 shadow-lg transition-transform hover:-translate-y-0.5"
-              style={{ background: COLORS.card, borderColor: COLORS.border }}
-            >
-              <div className="inline-flex p-2 rounded-lg" style={{ background: 'rgba(34,197,94,0.12)', color: COLORS.accent }}>
-                <Icon name={c.icon} className="w-4 h-4" />
-              </div>
-              <div className="text-2xl font-bold mt-3">{c.value}</div>
-              <div className="text-sm mt-1" style={{ color: COLORS.muted }}>{c.label}</div>
-            </div>
-          ))}
-        </section>
+        {activeMenu === 'students' && (
+          <>
+            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
+              {[
+                { icon: 'users', label: 'Total Students', value: summary.total },
+                { icon: 'play', label: 'Active Students', value: summary.active },
+                { icon: 'warning', label: 'Total Violations', value: summary.totalV },
+              ].map((c) => (
+                <div
+                  key={c.label}
+                  className="rounded-2xl border p-4 shadow-lg transition-transform hover:-translate-y-0.5"
+                  style={{ background: COLORS.card, borderColor: COLORS.border }}
+                >
+                  <div className="inline-flex p-2 rounded-lg" style={{ background: 'rgba(34,197,94,0.12)', color: COLORS.accent }}>
+                    <Icon name={c.icon} className="w-4 h-4" />
+                  </div>
+                  <div className="text-2xl font-bold mt-3">{c.value}</div>
+                  <div className="text-sm mt-1" style={{ color: COLORS.muted }}>{c.label}</div>
+                </div>
+              ))}
+            </section>
 
-        <section className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-5">
+            <h3 className="text-base font-semibold mb-3">Student Management</h3>
+            <section className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-5">
           <div className="xl:col-span-2 rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
             <div className="flex flex-wrap gap-3 mb-4">
               <input
@@ -385,7 +907,7 @@ export default function AdminPage() {
               <table className="w-full text-sm min-w-[1100px]">
                 <thead style={{ background: '#0f172a' }}>
                   <tr>
-                    {['Name', 'Roll Number', 'Profile', 'R1 Score', 'R2 Solved', 'R3 Solved', 'Violations', 'Last Seen', 'Status', 'Actions'].map((h) => (
+                    {['Name', 'Roll Number', 'Profile', 'R2 Solved', 'R3 Solved', 'Violations', 'Last Seen', 'Status', 'Actions'].map((h) => (
                       <th key={h} className="text-left px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>{h}</th>
                     ))}
                   </tr>
@@ -396,7 +918,6 @@ export default function AdminPage() {
                       <td className="px-3 py-3 font-medium">{s.name}</td>
                       <td className="px-3 py-3 text-slate-300">{s.rollNo}</td>
                       <td className="px-3 py-3 text-xs text-slate-400">{[s.college, s.department].filter(Boolean).join(' • ') || 'N/A'}</td>
-                      <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-amber-500/20 text-amber-300">{Number(s.r1?.score || 0).toFixed(2)}</span></td>
                       <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-blue-500/20 text-blue-300">{s.r2?.solved?.length || 0}</span></td>
                       <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300">{s.r3?.solved?.length || 0}</span></td>
                       <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-red-500/20 text-red-300">{s.violations?.length || 0}</span></td>
@@ -423,7 +944,8 @@ export default function AdminPage() {
           </div>
 
           <div className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
-            <h3 className="text-sm font-semibold mb-3">Live Activity</h3>
+            <h3 className="text-sm font-semibold mb-3">Announcements</h3>
+            <p className="text-xs mb-3" style={{ color: COLORS.muted }}>Latest contest events and alerts for admins.</p>
             <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
               {events.map((e) => (
                 <div key={e.id} className="rounded-lg border px-3 py-2 text-xs" style={{ background: '#0f172a', borderColor: COLORS.border }}>
@@ -437,18 +959,470 @@ export default function AdminPage() {
               {!events.length && <div className="text-xs" style={{ color: COLORS.muted }}>No recent activity yet.</div>}
             </div>
           </div>
-        </section>
+            </section>
+          </>
+        )}
 
-        <section className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
-          <h3 className="text-sm font-semibold mb-3">Contest Controls</h3>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={startContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', border: '1px solid rgba(34,197,94,0.35)' }}><Icon name="play" className="w-4 h-4" />Start Contest</button>
-            <button onClick={pauseContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: 'rgba(245,158,11,0.16)', color: '#fde68a', border: '1px solid rgba(245,158,11,0.35)' }}><Icon name="pause" className="w-4 h-4" />Pause Contest</button>
-            <button onClick={endContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: 'rgba(239,68,68,0.16)', color: '#fecaca', border: '1px solid rgba(239,68,68,0.35)' }}><Icon name="stop" className="w-4 h-4" />End Contest</button>
-            <button onClick={resetContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: '#0f172a', color: '#cbd5e1', border: `1px solid ${COLORS.border}` }}><Icon name="reset" className="w-4 h-4" />Reset Contest</button>
-          </div>
-        </section>
+        {activeMenu === 'violations' && (
+          <section className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+            <h3 className="text-sm font-semibold mb-3">Violations &amp; Terminations</h3>
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className="px-3 py-1 rounded-full text-xs font-semibold border" style={{ color: '#fecaca', borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.12)' }}>
+                {violationSummary.terminated} terminated
+              </span>
+              <span className="px-3 py-1 rounded-full text-xs font-semibold border" style={{ color: '#fde68a', borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.12)' }}>
+                {violationSummary.warnings} with warnings
+              </span>
+            </div>
+            <div className="overflow-auto rounded-xl border" style={{ borderColor: COLORS.border }}>
+              <table className="w-full text-sm min-w-[760px]">
+                <thead style={{ background: '#0f172a' }}>
+                  <tr>
+                    {['Student Name', 'Roll No', 'Violation Count', 'Status', 'Latest Violation', 'Reinstate'].map((h) => (
+                      <th key={h} className="text-left px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {violations.map((row) => {
+                    const latest = (row.violations || [])[0];
+                    const latestType = latest?.type ? String(latest.type).replace(/_/g, ' ') : 'N/A';
+                    return (
+                    <tr key={row._id} className="border-t" style={{ borderColor: COLORS.border, background: row.terminated ? 'rgba(127,29,29,0.18)' : 'transparent' }}>
+                      <td className="px-3 py-3 font-medium">{row.studentName}</td>
+                      <td className="px-3 py-3">{row.rollNo}</td>
+                      <td className="px-3 py-3">{Number(row.violationCount || 0)}</td>
+                      <td className="px-3 py-3">
+                        <span className="px-2 py-1 rounded-full border text-xs font-semibold" style={row.terminated
+                          ? { color: '#fecaca', borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.12)' }
+                          : { color: '#fde68a', borderColor: 'rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.12)' }}>
+                          {row.terminated ? 'Terminated' : 'Warning'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3" style={{ color: COLORS.muted }}>
+                        {latestType} {latest?.timestamp ? `• ${formatAgo(latest.timestamp)}` : ''}
+                      </td>
+                      <td className="px-3 py-3">
+                        <button
+                          onClick={() => reinstateFromViolationRow(row)}
+                          className="px-3 py-1.5 rounded-lg border text-xs font-semibold hover:bg-emerald-500/15"
+                          style={{ borderColor: 'rgba(34,197,94,0.35)', color: '#86efac' }}
+                        >
+                          Reinstate
+                        </button>
+                      </td>
+                    </tr>
+                  )})}
+                  {!violations.length && (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center" style={{ color: COLORS.muted }}>No violations logged yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {activeMenu === 'bank' && (
+          <section className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+             <div className="flex items-center gap-2 mb-4">
+               <h3 className="text-sm font-semibold">Question Bank</h3>
+               <button onClick={fetchQuestionBank} className="px-2 py-1 text-xs rounded border" style={{ borderColor: COLORS.border }}>Reload</button>
+             </div>
+             {bankLoading ? (
+               <div className="text-sm" style={{ color: COLORS.muted }}>Loading question bank...</div>
+             ) : (
+               <>
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+                   <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+                     <div className="text-xs uppercase" style={{ color: COLORS.muted }}>MCQ</div>
+                     <div className="text-2xl font-bold mt-1">{bankData.mcq.length}</div>
+                   </div>
+                   <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+                     <div className="text-xs uppercase" style={{ color: COLORS.muted }}>Debug</div>
+                     <div className="text-2xl font-bold mt-1">{bankData.debug.length}</div>
+                   </div>
+                   <div className="rounded-xl border p-3" style={{ borderColor: COLORS.border }}>
+                     <div className="text-xs uppercase" style={{ color: COLORS.muted }}>Coding</div>
+                     <div className="text-2xl font-bold mt-1">{bankData.coding.length}</div>
+                   </div>
+                 </div>
+
+                 {bankData.coding.length > 0 && (
+                   <div>
+                     <h4 className="text-sm font-semibold mb-2">Coding Problems — Allowed Languages</h4>
+                     <p className="text-xs mb-3" style={{ color: COLORS.muted }}>Set which languages students may use to submit each coding problem.</p>
+                     <div className="overflow-auto rounded-xl border" style={{ borderColor: COLORS.border }}>
+                       <table className="w-full text-sm min-w-[640px]">
+                         <thead style={{ background: '#0f172a' }}>
+                           <tr>
+                             <th className="text-left px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>Problem</th>
+                             {ALL_LANGS.map(l => (
+                               <th key={l} className="text-center px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>{LANG_LABELS[l]}</th>
+                             ))}
+                             <th className="px-3 py-3" />
+                           </tr>
+                         </thead>
+                         <tbody>
+                           {bankData.coding.map(p => {
+                             const current = langEdits[p._id] ?? (p.allowedLanguages?.length ? p.allowedLanguages : ALL_LANGS);
+                             const isSaving = langSaving[p._id];
+                             return (
+                               <tr key={p._id} className="border-t" style={{ borderColor: COLORS.border }}>
+                                 <td className="px-3 py-3 font-medium">{p.title}</td>
+                                 {ALL_LANGS.map(l => (
+                                   <td key={l} className="px-3 py-3 text-center">
+                                     <input
+                                       type="checkbox"
+                                       checked={current.includes(l)}
+                                       onChange={() => {
+                                         const next = current.includes(l)
+                                           ? current.filter(x => x !== l)
+                                           : [...current, l];
+                                         setLangEdits(prev => ({ ...prev, [p._id]: next.length ? next : [l] }));
+                                       }}
+                                       className="w-4 h-4 accent-green-500"
+                                     />
+                                   </td>
+                                 ))}
+                                 <td className="px-3 py-3">
+                                   <button
+                                     disabled={isSaving}
+                                     onClick={async () => {
+                                       setLangSaving(prev => ({ ...prev, [p._id]: true }));
+                                       try {
+                                         await api.put(`/problems/admin/coding/${p._id}`, { allowedLanguages: current });
+                                         toast.success(`Languages saved for "${p.title}"`);
+                                         fetchQuestionBank();
+                                       } catch {
+                                         toast.error('Failed to save languages');
+                                       } finally {
+                                         setLangSaving(prev => ({ ...prev, [p._id]: false }));
+                                       }
+                                     }}
+                                     className="px-3 py-1.5 rounded-lg border text-xs font-semibold disabled:opacity-50"
+                                     style={{ borderColor: 'rgba(34,197,94,0.35)', color: '#86efac', background: 'rgba(34,197,94,0.08)' }}
+                                   >
+                                     {isSaving ? 'Saving...' : 'Save'}
+                                   </button>
+                                 </td>
+                               </tr>
+                             );
+                           })}
+                         </tbody>
+                       </table>
+                     </div>
+                   </div>
+                 )}
+               </>
+             )}
+           </section>
+         )}
+
+        {activeMenu === 'import' && (
+          <section className="rounded-2xl border p-4 space-y-5" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+            <div>
+              <h2 className="text-base font-bold">Question Manager</h2>
+              <p className="text-xs mt-1" style={{ color: COLORS.muted }}>Add, edit and delete individual questions</p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {[{ key: 'mcq', label: 'MCQ Questions' }, { key: 'debug', label: 'Debug Questions' }, { key: 'coding', label: 'Coding Questions' }].map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => {
+                    setQmTab(tab.key);
+                    fetchQuestionsForType(tab.key);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                  style={qmTab === tab.key
+                    ? { background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', borderColor: 'rgba(34,197,94,0.35)' }
+                    : { background: 'transparent', color: COLORS.muted, borderColor: COLORS.border }}
+                >
+                  {tab.label} ({qmCounts[tab.key]})
+                </button>
+              ))}
+              <button
+                onClick={() => openAddModal(qmTab)}
+                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold"
+                style={{ background: COLORS.accent, color: '#fff' }}
+              >
+                Add Question
+              </button>
+            </div>
+
+            <div className="rounded-xl border" style={{ borderColor: COLORS.border }}>
+              {qmLoading && !qmLoaded[qmTab] ? (
+                <div className="px-4 py-8 text-sm text-center" style={{ color: COLORS.muted }}>
+                  <span className="inline-flex items-center gap-2"><Icon name="refresh" className="w-4 h-4 animate-spin" /> Loading questions...</span>
+                </div>
+              ) : !activeQmQuestions.length ? (
+                <div className="px-4 py-8 text-sm text-center" style={{ color: COLORS.muted }}>
+                  {qmTab === 'mcq' && 'No MCQ questions yet. Click Add Question to create one.'}
+                  {qmTab === 'debug' && 'No Debug questions yet. Click Add Question to create one.'}
+                  {qmTab === 'coding' && 'No Coding questions yet. Click Add Question to create one.'}
+                </div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: COLORS.border }}>
+                  {activeQmQuestions.map((q) => (
+                    <div key={q._id} className={`p-3 transition-opacity duration-200 ${fadingRows[q._id] ? 'opacity-0' : 'opacity-100'}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {qmTab === 'mcq' && (
+                          <>
+                            <div className="font-medium text-sm max-w-[420px]" title={q.question}>{truncateText(q.question, 60)}</div>
+                            <div className="text-xs" style={{ color: COLORS.muted }}>
+                              Correct: {Array.isArray(q.options) ? (q.options[q.correctAnswer] || '-') : '-'}
+                            </div>
+                          </>
+                        )}
+
+                        {qmTab === 'debug' && (
+                          <>
+                            <div className="font-medium text-sm max-w-[300px]" title={q.title}>{q.title}</div>
+                            <div className="text-xs" style={{ color: COLORS.muted }}>
+                              Expected: {truncateText(q.expectedOutput || '', 30)}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {(q.allowedLanguages || []).map((lang) => (
+                                <span key={`${q._id}-${lang}`} className="px-2 py-0.5 rounded-full text-[11px] border" style={{ borderColor: COLORS.border, color: '#cbd5e1' }}>
+                                  {QM_LANG_LABELS[lang] || lang}
+                                </span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        {qmTab === 'coding' && (
+                          <>
+                            <div className="font-medium text-sm max-w-[300px]" title={q.title}>{q.title}</div>
+                            <div className="text-xs" style={{ color: COLORS.muted }}>
+                              {Array.isArray(q.testCases) ? q.testCases.length : 0} test cases
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {(q.allowedLanguages || []).map((lang) => (
+                                <span key={`${q._id}-${lang}`} className="px-2 py-0.5 rounded-full text-[11px] border" style={{ borderColor: COLORS.border, color: '#cbd5e1' }}>
+                                  {QM_LANG_LABELS[lang] || lang}
+                                </span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] border" style={{ borderColor: 'rgba(34,197,94,0.35)', color: '#86efac' }}>
+                          {Number(q.points || 0)} pts
+                        </span>
+                        <button
+                          onClick={() => openEditModal(qmTab, q)}
+                          className="px-2 py-1 rounded border text-xs"
+                          style={{ borderColor: COLORS.border, color: '#cbd5e1' }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirm({ type: qmTab, id: q._id })}
+                          disabled={deleteLoadingId === q._id}
+                          className="px-2 py-1 rounded border text-xs disabled:opacity-50"
+                          style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#fecaca' }}
+                        >
+                          {deleteLoadingId === q._id ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </div>
+
+                      {deleteConfirm?.id === q._id && deleteConfirm?.type === qmTab && (
+                        <div className="mt-3 rounded-lg border px-3 py-2 flex flex-wrap items-center gap-2" style={{ borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(127,29,29,0.18)' }}>
+                          <span className="text-xs" style={{ color: '#fecaca' }}>Delete this question? This cannot be undone.</span>
+                          <div className="ml-auto flex items-center gap-2">
+                            <button
+                              onClick={() => setDeleteConfirm(null)}
+                              className="px-2 py-1 rounded border text-xs"
+                              style={{ borderColor: COLORS.border, color: '#cbd5e1' }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={runDeleteQuestion}
+                              disabled={deleteLoadingId === q._id}
+                              className="px-2 py-1 rounded border text-xs disabled:opacity-50"
+                              style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#fecaca' }}
+                            >
+                              {deleteLoadingId === q._id ? 'Deleting...' : 'Delete'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t pt-5" style={{ borderColor: COLORS.border }}>
+              <div>
+                <h2 className="text-base font-bold">Bulk Import</h2>
+                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>Import multiple questions from a JSON file</p>
+              </div>
+
+              <div className="mt-4 flex gap-1 bg-black/20 rounded-xl p-1 max-w-sm">
+                {[{ key: 'mcq', label: 'MCQ' }, { key: 'debug', label: 'Debug' }, { key: 'coding', label: 'Coding' }].map(t => (
+                  <button key={t.key} onClick={() => setImportTab(t.key)}
+                    className="flex-1 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                    style={importTab === t.key ? { background: COLORS.accent, color: '#fff' } : { color: COLORS.muted }}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {['mcq', 'debug', 'coding'].map(type => importTab !== type ? null : (
+                <div key={type} className="space-y-4 mt-4">
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => downloadJsonTemplate(type)}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold"
+                      style={{ background: 'rgba(99,102,241,0.18)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.35)' }}>
+                      <Icon name="download" className="w-3.5 h-3.5" /> Download Template
+                    </button>
+                    <span className="text-xs" style={{ color: COLORS.muted }}>Max 50 questions per import</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold mb-1.5" style={{ color: COLORS.muted }}>Upload JSON File</label>
+                    <input key={importFileKey} type="file" accept=".json"
+                      onChange={e => handleImportFile(type, e)}
+                      className="block text-xs file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:cursor-pointer cursor-pointer"
+                      style={{ color: COLORS.muted }}
+                    />
+                  </div>
+
+                  {importParseError[type] && (
+                    <div className="rounded-lg px-3 py-2 text-xs font-medium" style={{ background: 'rgba(239,68,68,0.12)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.3)' }}>
+                      {importParseError[type]}
+                    </div>
+                  )}
+
+                  {importParsed[type] && (
+                    <div className="space-y-3">
+                      <p className="text-xs font-medium" style={{ color: COLORS.muted }}>
+                        {importParsed[type].length} question{importParsed[type].length !== 1 ? 's' : ''} ready to import
+                      </p>
+                      <div className="rounded-xl border overflow-hidden overflow-x-auto" style={{ borderColor: COLORS.border }}>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr style={{ background: 'rgba(255,255,255,0.04)' }}>
+                              {type === 'mcq' && (<><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>#</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Question</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Correct Answer</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Pts</th></>)}
+                              {type === 'debug' && (<><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>#</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Title</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Expected Output</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Pts</th></>)}
+                              {type === 'coding' && (<><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>#</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Title</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Test Cases</th><th className="px-3 py-2 text-left font-semibold" style={{ color: COLORS.muted }}>Pts</th></>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importParsed[type].slice(0, 20).map((q, i) => (
+                              <tr key={i} className="border-t" style={{ borderColor: COLORS.border }}>
+                                {type === 'mcq' && (<><td className="px-3 py-2" style={{ color: COLORS.muted }}>{i + 1}</td><td className="px-3 py-2 max-w-xs truncate">{q.question ?? '—'}</td><td className="px-3 py-2 max-w-[200px] truncate">{Array.isArray(q.options) ? (q.options[q.correctAnswer] ?? '?') : '—'}</td><td className="px-3 py-2">{q.points ?? '—'}</td></>)}
+                                {type === 'debug' && (<><td className="px-3 py-2" style={{ color: COLORS.muted }}>{i + 1}</td><td className="px-3 py-2 max-w-xs truncate">{q.title ?? '—'}</td><td className="px-3 py-2 max-w-[200px] truncate font-mono">{q.expectedOutput ?? '—'}</td><td className="px-3 py-2">{q.points ?? '—'}</td></>)}
+                                {type === 'coding' && (<><td className="px-3 py-2" style={{ color: COLORS.muted }}>{i + 1}</td><td className="px-3 py-2 max-w-xs truncate">{q.title ?? '—'}</td><td className="px-3 py-2">{Array.isArray(q.testCases) ? q.testCases.length : '—'}</td><td className="px-3 py-2">{q.points ?? '—'}</td></>)}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {importParsed[type].length > 20 && (
+                          <div className="px-3 py-2 text-xs text-center" style={{ color: COLORS.muted, borderTop: `1px solid ${COLORS.border}` }}>
+                            ...and {importParsed[type].length - 20} more
+                          </div>
+                        )}
+                      </div>
+
+                      <button disabled={importLoading} onClick={() => handleImportAll(type)}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                        style={{ background: COLORS.accent, color: '#fff' }}>
+                        <Icon name={importLoading ? 'refresh' : 'upload'} className={`w-4 h-4 ${importLoading ? 'animate-spin' : ''}`} />
+                        {importLoading ? 'Importing...' : `Import ${importParsed[type].length} Question${importParsed[type].length !== 1 ? 's' : ''}`}
+                      </button>
+                    </div>
+                  )}
+
+                  {importResult[type] && (
+                    (() => {
+                      const r = importResult[type];
+                      if (!r.ok) return (
+                        <div className="rounded-lg px-3 py-2 text-xs font-medium" style={{ background: 'rgba(239,68,68,0.12)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.3)' }}>
+                          {r.error}
+                        </div>
+                      );
+                      const allOk = r.failed === 0;
+                      const color = allOk ? '#86efac' : '#fde68a';
+                      const bg = allOk ? 'rgba(34,197,94,0.12)' : 'rgba(245,158,11,0.12)';
+                      const border = allOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)';
+                      return (
+                        <div className="rounded-lg px-3 py-2 text-xs space-y-1" style={{ background: bg, color, border: `1px solid ${border}` }}>
+                          <div className="font-semibold">{r.imported} imported, {r.failed} failed</div>
+                          {r.errors?.length > 0 && (
+                            <ul className="list-disc list-inside space-y-0.5 opacity-80">
+                              {r.errors.map((e, i) => <li key={i}>{e}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {activeMenu === 'settings' && (
+          <section className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+            <h3 className="text-sm font-semibold mb-3">Settings</h3>
+            <div className="flex flex-wrap gap-2">
+              <button disabled={busy} onClick={startContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', border: '1px solid rgba(34,197,94,0.35)' }}><Icon name={busy ? 'refresh' : 'play'} className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />Start Contest</button>
+              <button disabled={busy} onClick={pauseContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: 'rgba(245,158,11,0.16)', color: '#fde68a', border: '1px solid rgba(245,158,11,0.35)' }}><Icon name={busy ? 'refresh' : 'pause'} className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />Pause Contest</button>
+              <button disabled={busy} onClick={endContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: 'rgba(239,68,68,0.16)', color: '#fecaca', border: '1px solid rgba(239,68,68,0.35)' }}><Icon name={busy ? 'refresh' : 'stop'} className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />End Contest</button>
+              <button disabled={busy} onClick={resetContest} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: '#0f172a', color: '#cbd5e1', border: `1px solid ${COLORS.border}` }}><Icon name={busy ? 'refresh' : 'reset'} className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />Reset Contest</button>
+            </div>
+          </section>
+        )}
       </main>
+
+      <QuestionModal
+        open={modalOpen}
+        type={modalType}
+        editingQuestion={editingQuestion}
+        onClose={closeQuestionModal}
+        onSaved={handleQuestionSaved}
+      />
+
+      {restartConfirmRound && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center p-4 z-[100]" onClick={() => setRestartConfirmRound(null)}>
+          <div className="w-full max-w-xl rounded-2xl border p-5" style={{ background: COLORS.card, borderColor: COLORS.border }} onClick={(e) => e.stopPropagation()}>
+            <h4 className="text-lg font-bold mb-2">Restart Round {restartConfirmRound}?</h4>
+            <p className="text-sm" style={{ color: COLORS.muted }}>
+              This will:
+            </p>
+            <ul className="text-sm mt-2 space-y-1 list-disc pl-5" style={{ color: COLORS.muted }}>
+              <li>Set the current round back to Round {restartConfirmRound}</li>
+              <li>Clear all student progress for Round {restartConfirmRound}</li>
+              <li>Allow students to resubmit Round {restartConfirmRound} answers</li>
+            </ul>
+            <p className="text-sm mt-3" style={{ color: '#fca5a5' }}>This cannot be undone.</p>
+
+            <div className="mt-4 flex items-center gap-2 justify-end">
+              <button
+                onClick={() => setRestartConfirmRound(null)}
+                className="px-3 py-2 rounded-lg border text-sm font-semibold"
+                style={{ borderColor: COLORS.border, color: '#cbd5e1', background: '#334155' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={restartRoundConfirmed}
+                className="px-3 py-2 rounded-lg border text-sm font-semibold"
+                style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#fecaca', background: 'rgba(239,68,68,0.2)' }}
+              >
+                Yes, Restart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedProfile && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4" onClick={() => setSelectedProfile(null)}>
@@ -462,7 +1436,7 @@ export default function AdminPage() {
               <div>Session: {selectedProfile.academicSession || 'N/A'}</div>
               <div>Status: {selectedProfile.status}</div>
               <div>Violations: {selectedProfile.violations?.length || 0}</div>
-              <div>Scores: R1 {Number(selectedProfile.r1?.score || 0).toFixed(2)} | R2 {Number(selectedProfile.r2?.score || 0)} | R3 {Number(selectedProfile.r3?.score || 0)}</div>
+              <div>Progress: R2 solved {selectedProfile.r2?.solved?.length || 0} | R3 solved {selectedProfile.r3?.solved?.length || 0}</div>
             </div>
             <button
               className="mt-4 px-3 py-2 rounded-lg border"

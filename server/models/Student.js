@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
 
 const ViolationSchema = new mongoose.Schema({
-  type:      { type: String, required: true },
-  round:     { type: Number, default: 0 },
-  timestamp: { type: Date, default: Date.now },
+  type:        { type: String, required: true },
+  timestamp:   { type: Date, default: Date.now },
+  description: { type: String, default: '' },
+  round:       { type: Number, default: 0 },
 });
 
 const SessionSchema = new mongoose.Schema({
@@ -61,7 +62,37 @@ const StudentSchema = new mongoose.Schema({
   },
 
   violations:   [ViolationSchema],
+  violationCount: { type: Number, default: 0 },
+  terminated: { type: Boolean, default: false },
+  terminatedReason: { type: String, default: '' },
   overrides:    { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
+
+  // Round progression
+  currentRound:      { type: Number, default: 1 },
+  eliminated:        { type: Boolean, default: false },
+  eliminatedReason:  { type: String, default: '' },
+
+  // Round 1 tracking
+  mcqAnswers: [{
+    questionId:      { type: mongoose.Schema.Types.ObjectId, required: true },
+    selectedAnswer:  { type: Number, required: true },
+    correct:         { type: Boolean, default: false },
+  }],
+  mcqCorrectCount:   { type: Number, default: 0 },
+  mcqCompletedAt:    { type: Date, default: null },
+
+  // Round 2 tracking
+  debugSolvedCount:  { type: Number, default: 0 },
+  debugSolvedIds:    [{ type: mongoose.Schema.Types.ObjectId }],
+  debugCompletedAt:  { type: Date, default: null },
+
+  // Round 3 tracking
+  codingSolvedCount: { type: Number, default: 0 },
+  codingCompletedAt: { type: Date, default: null },
+
+  // Final ranking
+  totalTimeMs:       { type: Number, default: null },
+  finalRank:         { type: Number, default: null },
 
   // Timestamps
   joinedAt:     { type: Date, default: Date.now },

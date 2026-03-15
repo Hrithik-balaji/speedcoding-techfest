@@ -1,43 +1,54 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
+import { useAuth } from '../hooks/useAuth';
+import api from '../utils/api';
 
-export default function TerminatedOverlay({ reason, time, rollNo, onReinstate }) {
-  const [code, setCode]       = useState('');
-  const [error, setError]     = useState('');
-  const [loading, setLoading] = useState(false);
+const REASON_LABELS = {
+  tab_switch: 'Tab switch or window blur detected',
+  escape_key: 'Escape key press detected',
+  right_click: 'Right click attempt detected',
+  copy_paste: 'Copy or paste attempt detected',
+  devtools_attempt: 'Developer tools shortcut attempt detected',
+  navigation_attempt: 'Browser navigation attempt detected',
+  fullscreen_exit: 'Fullscreen exit detected',
+};
 
-  const handleSubmit = async () => {
-    setError('');
-    setLoading(true);
-    try {
-      await onReinstate(rollNo, code);
-    } catch (err) {
-      setError(err.response?.data?.error || 'Invalid code. Contact invigilator.');
-    } finally {
-      setLoading(false);
-    }
-  };
+export default function TerminatedOverlay({ reason, violationCount }) {
+  const { refreshStudent } = useAuth();
+  const humanReason = REASON_LABELS[reason] || String(reason || 'Policy violation detected');
+
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      try {
+        const { data } = await api.get('/students/me');
+        const freshStudent = data?.student;
+        if (freshStudent && !freshStudent.terminated) {
+          await refreshStudent?.();
+          clearInterval(poll);
+        }
+      } catch {
+        // Keep polling quietly; auth interceptor handles invalid sessions.
+      }
+    }, 10000);
+
+    return () => clearInterval(poll);
+  }, [refreshStudent]);
 
   return (
-    <div className="fixed inset-0 bg-[rgba(20,0,0,0.97)] z-[9998] flex flex-col items-center justify-center gap-5">
-      <div className="text-6xl">🚫</div>
-      <div className="text-3xl font-extrabold text-hard">Session Terminated</div>
-      <div className="text-muted text-center max-w-md">Reason: {reason}</div>
-      <div className="text-[#555] text-sm">{time}</div>
-      <div className="panel p-6 w-full max-w-sm mt-2">
-        <div className="text-sm text-center mb-4">Contact your invigilator for re-entry</div>
-        <input
-          className="input-field mb-3"
-          type="password"
-          placeholder="Enter invigilator code"
-          value={code}
-          onChange={e => setCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-          autoFocus
-        />
-        {error && <div className="text-hard text-xs mb-2">{error}</div>}
-        <button onClick={handleSubmit} className="btn-primary w-full" disabled={loading}>
-          {loading ? 'Verifying...' : 'Verify & Re-enter'}
-        </button>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(10, 0, 0, 0.96)' }}>
+      <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#1a0808', borderColor: 'rgba(127,29,29,0.6)' }}>
+        <div className="text-5xl mb-4">🚫</div>
+        <h1 className="text-3xl font-extrabold mb-2" style={{ color: '#f87171' }}>
+          You have been removed from the exam
+        </h1>
+        <p className="text-sm mb-4" style={{ color: '#fca5a5' }}>
+          Reason: {humanReason}
+        </p>
+        <p className="text-sm mb-2" style={{ color: '#94a3b8' }}>
+          Total recorded violations: {Number(violationCount || 0)}
+        </p>
+        <p className="text-sm" style={{ color: '#cbd5e1' }}>
+          Please contact the invigilator for further instructions.
+        </p>
       </div>
     </div>
   );

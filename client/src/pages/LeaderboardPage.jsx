@@ -1,105 +1,79 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api from '../utils/api';
 
-export default function LeaderboardPage() {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(null);
+const COLORS = {
+  bg: '#0B1120',
+  card: '#111827',
+  border: '#1f2937',
+  muted: '#94a3b8',
+  text: '#e2e8f0',
+  accent: '#22C55E',
+};
 
-  const fetchLB = async () => {
+export default function LeaderboardPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchLeaderboard = useCallback(async () => {
     try {
       const { data } = await api.get('/leaderboard');
-      setData(data);
-      setLastUpdate(new Date().toLocaleTimeString());
-    } catch {}
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchLB();
-    const id = setInterval(fetchLB, 10000);
-    return () => clearInterval(id);
+      setRows(Array.isArray(data) ? data : []);
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  if (loading) return (
-    <div className="fixed inset-0 bg-bg flex items-center justify-center text-muted text-lg">
-      Loading...
-    </div>
-  );
-
-  const { leaderboard = [], codingProblems = [] } = data || {};
+  useEffect(() => {
+    fetchLeaderboard();
+    const id = setInterval(fetchLeaderboard, 10000);
+    return () => clearInterval(id);
+  }, [fetchLeaderboard]);
 
   return (
-    <div className="min-h-screen bg-bg p-8 overflow-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div className="text-3xl font-extrabold text-accent">⚡ Speeding Coding — Live Leaderboard</div>
-        <div className="text-sm text-muted">Updated: {lastUpdate} · Auto-refreshes every 10s</div>
-      </div>
+    <div className="min-h-screen p-6" style={{ background: COLORS.bg, color: COLORS.text, fontFamily: "'Inter', sans-serif" }}>
+      <div className="max-w-5xl mx-auto">
+        <div className="mb-5">
+          <div className="text-xs uppercase tracking-[0.18em] font-semibold mb-1" style={{ color: COLORS.accent }}>
+            Live Rankings
+          </div>
+          <h1 className="text-2xl font-bold">Leaderboard</h1>
+        </div>
 
-      <div className="panel overflow-hidden">
-        <table className="admin-table w-full">
-          <thead>
-            <tr>
-              <th className="text-center w-16 text-base">#</th>
-              <th className="text-base">Student</th>
-              <th className="text-base">R1 Score</th>
-              <th className="text-center text-base">R2 Score</th>
-              <th className="text-center text-base">R3 Score</th>
-              {codingProblems.map(p => (
-                <th key={p._id} className="text-center" title={p.title}>
-                  <span className={`diff-pill diff-${p.difficulty?.toLowerCase()}`}>
-                    {p.title.substring(0, 8)}
-                  </span>
-                </th>
-              ))}
-              <th className="text-base">R3 Penalty</th>
-              <th className="text-base">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaderboard.map((row, i) => {
-              const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : null;
-              const statusColor =
-                row.status === 'Active' ? 'bg-easy/15 text-easy' :
-                row.status === 'Warned' ? 'bg-accent/15 text-accent' :
-                'bg-hard/15 text-hard';
-              return (
-                <tr key={row._id} className="hover:bg-border/20">
-                  <td className="text-center text-xl font-bold">
-                    {medal || <span className="text-muted">{row.rank}</span>}
-                  </td>
-                  <td>
-                    <div className="font-semibold text-base">{row.name}</div>
-                    <div className="text-xs text-muted font-mono">{row.rollNo}</div>
-                  </td>
-                  <td className="text-accent font-bold text-base">{row.r1Score?.toFixed(2)}</td>
-                  <td className="text-center font-bold text-base">{row.r2Score}</td>
-                  <td className="text-center font-bold text-base">{row.r3Score}</td>
-                  {codingProblems.map(p => {
-                    const s = row.codingStatus?.[p._id];
-                    return (
-                      <td key={p._id} className="text-center">
-                        {s === 'solved'    && <span className="w-3.5 h-3.5 rounded-full bg-easy inline-block" />}
-                        {s === 'attempted' && <span className="w-3.5 h-3.5 rounded-full bg-hard inline-block" />}
-                        {s === 'unsolved'  && <span className="w-3.5 h-3.5 rounded-full bg-border inline-block" />}
-                      </td>
-                    );
-                  })}
-                  <td className="font-mono text-muted">{row.r3Penalty}m</td>
-                  <td>
-                    <span className={`verdict-badge ${statusColor} text-xs`}>{row.status}</span>
-                  </td>
+        <div className="rounded-2xl border overflow-hidden" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+          {loading ? (
+            <div className="py-16 text-center" style={{ color: COLORS.muted }}>Loading leaderboard...</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead style={{ background: '#0f172a' }}>
+                <tr>
+                  <th className="text-left px-4 py-3 font-semibold" style={{ color: '#cbd5e1' }}>Rank</th>
+                  <th className="text-left px-4 py-3 font-semibold" style={{ color: '#cbd5e1' }}>Name</th>
+                  <th className="text-left px-4 py-3 font-semibold" style={{ color: '#cbd5e1' }}>Roll No</th>
+                  <th className="text-left px-4 py-3 font-semibold" style={{ color: '#cbd5e1' }}>Time</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="flex items-center gap-4 mt-4 text-xs text-muted">
-        <span><span className="w-2.5 h-2.5 rounded-full bg-easy inline-block mr-1" /> Solved</span>
-        <span><span className="w-2.5 h-2.5 rounded-full bg-hard inline-block mr-1" /> Attempted</span>
-        <span><span className="w-2.5 h-2.5 rounded-full bg-border inline-block mr-1" /> Unsolved</span>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={`${r.rollNo}-${r.rank}`} className="border-t" style={{ borderColor: COLORS.border }}>
+                    <td className="px-4 py-3 font-semibold">{r.rank}</td>
+                    <td className="px-4 py-3">{r.name}</td>
+                    <td className="px-4 py-3" style={{ color: COLORS.muted }}>{r.rollNo}</td>
+                    <td className="px-4 py-3 font-mono">{r.totalTimeFormatted}</td>
+                  </tr>
+                ))}
+                {!rows.length && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center" style={{ color: COLORS.muted }}>
+                      No finishers yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );

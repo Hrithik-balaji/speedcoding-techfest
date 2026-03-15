@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Environment — contains MongoDB URI, JWT secret, admin password
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store

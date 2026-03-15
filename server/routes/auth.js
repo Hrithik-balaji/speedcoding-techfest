@@ -19,6 +19,7 @@ async function getState() {
 }
 
 const normalizeStudent = (student) => ({
+  id: student._id,
   _id: student._id,
   name: student.name,
   rollNo: student.rollNo,
@@ -26,6 +27,11 @@ const normalizeStudent = (student) => ({
   phoneNumber: student.phoneNumber,
   department: student.department,
   academicSession: student.academicSession,
+  currentRound: student.currentRound,
+  eliminated: Boolean(student.eliminated),
+  eliminatedReason: student.eliminatedReason || '',
+  terminated: Boolean(student.terminated),
+  terminatedReason: student.terminatedReason || '',
   status: student.status,
 });
 
@@ -135,10 +141,12 @@ router.post('/login', async (req, res) => {
     const sessionId = startStudentSession(student, req);
     await student.save();
 
+    const freshStudent = await Student.findById(student._id);
+
     const token = signToken(student._id, sessionId);
     return res.json({
       token,
-      student: normalizeStudent(student),
+      student: normalizeStudent(freshStudent || student),
     });
   } catch (err) {
     console.error(err);
@@ -199,9 +207,19 @@ router.post('/reinstate', async (req, res) => {
     if (code !== process.env.INVIGILATOR_CODE)
       return res.status(401).json({ error: 'Invalid invigilator code' });
 
+    let query = null;
+    if (rollNo?.trim()) {
+      query = { rollNo: rollNo.trim().toUpperCase() };
+    } else if (req.headers.authorization?.startsWith('Bearer ')) {
+      const token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      query = { _id: decoded.id };
+    }
+    if (!query) return res.status(400).json({ error: 'rollNo is required when not authenticated' });
+
     const student = await Student.findOneAndUpdate(
-      { rollNo: rollNo?.toUpperCase() },
-      { status: 'Active', lastSeen: new Date() },
+      query,
+      { status: 'Active', lastSeen: new Date(), terminated: false, terminatedReason: '', violationCount: 0 },
       { new: true }
     );
     if (!student) return res.status(404).json({ error: 'Student not found' });

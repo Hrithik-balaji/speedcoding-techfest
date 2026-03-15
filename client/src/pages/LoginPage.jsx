@@ -153,10 +153,29 @@ export default function LoginPage() {
         } else {
           localStorage.removeItem('sc_remember_roll');
         }
-        await login({
+        const loggedInStudent = await login({
           rollNo: form.rollNo.trim(),
           password: form.password,
         });
+
+        localStorage.removeItem('terminated');
+        localStorage.removeItem('terminatedReason');
+        sessionStorage.removeItem('sc_terminated');
+
+        if (loggedInStudent?.terminated === true && Number(loggedInStudent?.currentRound || 0) > 0) {
+          navigate('/exam');
+          return;
+        }
+
+        if (loggedInStudent?.terminated === false) {
+          navigate('/exam');
+          return;
+        }
+
+        if (Number(loggedInStudent?.currentRound || 0) === 0) {
+          navigate('/exam');
+          return;
+        }
       }
       navigate('/exam');
     } catch (err) {

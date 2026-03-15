@@ -20,6 +20,20 @@ const ExamStateSchema = new mongoose.Schema({
   paused:   { type: Boolean, default: false },
   pausedAt: { type: Date },
 
+  // Contest lifecycle state
+  contestStarted: { type: Boolean, default: false },
+  contestStartTime: { type: Number, default: null },
+  currentRound:   { type: Number, default: 0 }, // 0 = not started
+  roundActive:    { type: Boolean, default: false },
+  roundStartedAt: { type: Date, default: null },
+  roundEndedAt:   { type: Date, default: null },
+  roundHistory: [{
+    round: { type: Number },
+    startedAt: { type: Date, default: null },
+    endedAt: { type: Date, default: null },
+    restartedAt: { type: Date, default: null },
+  }],
+
   // Round end times (epoch ms — set when a round starts)
   roundEndTimes: {
     r1: { type: Number },

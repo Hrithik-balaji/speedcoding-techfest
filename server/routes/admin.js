@@ -15,7 +15,7 @@ async function getState() {
 router.get('/students', adminProtect, async (req, res) => {
   try {
     const students = await Student.find()
-      .select('_id name rollNo college phoneNumber department academicSession status lastSeen overrides violations r1.score r2.score r2.solved r2.penalty r3.score r3.solved r3.penalty')
+      .select('_id name rollNo college phoneNumber department academicSession status terminated terminatedReason violationCount lastSeen overrides violations r1.score r2.score r2.solved r2.penalty r3.score r3.solved r3.penalty')
       .sort({ createdAt: 1 });
     res.json(students);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -28,7 +28,9 @@ router.patch('/students/:id/kick', adminProtect, async (req, res) => {
       req.params.id,
       {
         status: 'Kicked',
-        $push: { violations: { type: 'Kicked by admin', round: 0 } },
+        terminated: true,
+        terminatedReason: 'admin_kick',
+        $push: { violations: { type: 'admin_kick', round: 0, description: 'Kicked by admin' } },
       },
       { new: true }
     );
@@ -59,7 +61,15 @@ router.patch('/students/:id/reinstate', adminProtect, async (req, res) => {
     const { reason } = req.body;
     const student = await Student.findByIdAndUpdate(
       req.params.id,
-      { status: 'Active' },
+      {
+        $set: {
+          status: 'Active',
+          terminated: false,
+          terminatedReason: '',
+          violationCount: 0,
+          violations: [],
+        },
+      },
       { new: true }
     );
     if (!student) return res.status(404).json({ error: 'Student not found' });
@@ -68,14 +78,24 @@ router.patch('/students/:id/reinstate', adminProtect, async (req, res) => {
     state.reinstateLog.push({ studentName: student.name, rollNo: student.rollNo, reason: reason || '' });
     await state.save();
 
-    res.json(student);
+    res.json({
+      success: true,
+      message: 'Student reinstated',
+      student: {
+        terminated: false,
+        terminatedReason: '',
+      },
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // POST /api/admin/students/bulk-reinstate
 router.post('/students/bulk-reinstate', adminProtect, async (req, res) => {
   try {
-    await Student.updateMany({ status: 'Kicked' }, { status: 'Active' });
+    await Student.updateMany(
+      { $or: [{ status: 'Kicked' }, { terminated: true }] },
+      { status: 'Active', terminated: false, terminatedReason: '', violationCount: 0 }
+    );
     const state = await getState();
     state.reinstateLog.push({ studentName: 'ALL', rollNo: 'BULK', reason: 'Bulk reinstate by admin' });
     await state.save();
@@ -123,28 +143,83 @@ router.patch('/students/:id/override', adminProtect, async (req, res) => {
 router.get('/violations', adminProtect, async (req, res) => {
   try {
     const students = await Student.find({ 'violations.0': { $exists: true } })
-      .select('name rollNo violations');
-    const all = [];
-    students.forEach(s => {
-      s.violations.forEach(v => all.push({
-        name: s.name, rollNo: s.rollNo,
-        type: v.type, round: v.round, timestamp: v.timestamp,
-      }));
-    });
-    all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    res.json(all);
+      .select('_id name rollNo violationCount terminated terminatedReason violations');
+
+    const rows = students
+      .map((s) => ({
+        _id: s._id,
+        studentName: s.name,
+        rollNo: s.rollNo,
+        violationCount: Number(s.violationCount || s.violations?.length || 0),
+        terminated: Boolean(s.terminated),
+        terminatedReason: s.terminatedReason || '',
+        violations: (s.violations || [])
+          .map((v) => ({
+            type: v.type,
+            description: v.description || '',
+            timestamp: v.timestamp,
+            round: v.round,
+          }))
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
+      }))
+      .sort((a, b) => b.violationCount - a.violationCount);
+
+    res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // GET /api/admin/state — exam state
 router.get('/state', adminProtect, async (req, res) => {
-  res.json(await getState());
+  const state = await getState();
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+  const connectedStudents = await Student.countDocuments({
+    status: { $ne: 'Kicked' },
+    lastSeen: { $gte: twoMinutesAgo },
+  });
+
+  res.json({
+    ...state.toObject(),
+    connectedStudents,
+  });
 });
 
 // GET /api/admin/logs — override + reinstate logs
 router.get('/logs', adminProtect, async (req, res) => {
   const state = await getState();
   res.json({ overrideLog: state.overrideLog, reinstateLog: state.reinstateLog });
+});
+
+// GET /api/admin/round-status — progression summary
+router.get('/round-status', adminProtect, async (_req, res) => {
+  try {
+    const students = await Student.find().select(
+      'currentRound eliminated eliminatedReason mcqCorrectCount debugSolvedCount codingCompletedAt r1.submitted'
+    );
+
+    const round1Total = students.length;
+    const round1Promoted = students.filter((s) => Number(s.currentRound || 0) >= 2 || Number(s.mcqCorrectCount || 0) >= 5).length;
+    const round1Eliminated = students.filter((s) => s.eliminated && String(s.eliminatedReason || '') === 'Did not pass Round 1').length;
+
+    const round2Pool = students.filter((s) => Number(s.currentRound || 0) >= 2 || Number(s.debugSolvedCount || 0) > 0);
+    const round2Total = round2Pool.length;
+    const round2Promoted = round2Pool.filter((s) => Number(s.currentRound || 0) >= 3 || Number(s.debugSolvedCount || 0) >= 2).length;
+    const round2Eliminated = students.filter((s) => s.eliminated && String(s.eliminatedReason || '') === 'Did not pass Round 2').length;
+
+    const round3Pool = students.filter((s) => Number(s.currentRound || 0) >= 3 || s.codingCompletedAt);
+    const round3Total = round3Pool.length;
+    const round3Finished = round3Pool.filter((s) => Boolean(s.codingCompletedAt)).length;
+
+    const notStarted = students.filter((s) => Number(s.currentRound || 1) === 1 && !s.r1?.submitted).length;
+
+    return res.json({
+      round1: { total: round1Total, promoted: round1Promoted, eliminated: round1Eliminated },
+      round2: { total: round2Total, promoted: round2Promoted, eliminated: round2Eliminated },
+      round3: { total: round3Total, finished: round3Finished },
+      notStarted,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

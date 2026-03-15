@@ -1,106 +1,177 @@
-import { useEffect, useRef, useCallback } from 'react';
+// Security rules:
+// TERMINATES: Alt+Tab (alt key + window blur), ESC key
+// SILENTLY BLOCKS: right click, copy, paste, cut, F12, devtools shortcuts
+// DOES NOTHING: clicking screen, window focus/blur without alt, visibility change
+
+import { useEffect, useRef, useState, useCallback } from 'react';
 import api from '../utils/api';
 
-export function useSecurity({ active, student, onTerminate, onWarn }) {
-  const warned = useRef(false);
-  const devtoolsRef = useRef(false);
-  const terminatedRef = useRef(false);
+export function useSecurity({ enabled }) {
+  const [isTerminated, setIsTerminated] = useState(false);
+  const [violationCount, setViolationCount] = useState(0);
+  const [securityActive, setSecurityActive] = useState(false);
 
-  const reportViolation = useCallback(async (type, round = 0) => {
-    try {
-      const { data } = await api.post('/students/me/violation', { type, round });
-      if (data.warned) {
-        onWarn(type);
-        warned.current = true;
-      }
-    } catch {}
-  }, [onTerminate, onWarn]);
+  const isTerminatedRef = useRef(false);
+  const altPressed = useRef(false);
+  const securityActivated = useRef(false);
+  const detachRef = useRef(() => {});
 
-  useEffect(() => {
-    if (!active) return;
-    terminatedRef.current = false;
-
-    const terminateNow = (reason, round = 0) => {
-      if (terminatedRef.current) return;
-      terminatedRef.current = true;
-      reportViolation(reason, round);
-      onTerminate(reason);
-    };
-
-    // ── Block dangerous keys ──────────────────────────────────
-    const onKeyDown = (e) => {
-      const { key, ctrlKey, metaKey, shiftKey } = e;
-      if (key === 'Escape') {
-        e.preventDefault();
-        terminateNow('Escape key pressed', 0);
-        return;
-      }
-      if (key === 'F12') { e.preventDefault(); reportViolation('DevTools (F12)'); return; }
-      if ((ctrlKey || metaKey) && shiftKey && ['i','I','j','J','c','C'].includes(key)) {
-        e.preventDefault(); reportViolation('DevTools shortcut'); return;
-      }
-      if ((ctrlKey || metaKey) && key === 'u') { e.preventDefault(); reportViolation('View Source'); return; }
-      if ((ctrlKey || metaKey) && (key === 'r' || key === 'R')) { e.preventDefault(); return; }
-      if (key === 'F5') { e.preventDefault(); return; }
-    };
-
-    // ── Block right-click ─────────────────────────────────────
-    const onContext = (e) => e.preventDefault();
-
-    // ── Tab visibility ────────────────────────────────────────
-    const onVisibility = () => {
-      if (document.hidden) {
-        if (!warned.current) { reportViolation('Tab switch (warning)'); }
-        else { reportViolation('Tab switch (repeated)'); }
-      }
-    };
-
-    // ── Window blur ───────────────────────────────────────────
-    const onBlur = () => {
-      if (!warned.current) { reportViolation('Window blur (warning)'); }
-      else { reportViolation('Window blur (repeated)'); }
-    };
-
-    // ── Fullscreen exit ───────────────────────────────────────
-    const onFullscreen = () => {
-      if (!document.fullscreenElement) {
-        if (!warned.current) { reportViolation('Fullscreen exited (warning)'); }
-        else { reportViolation('Fullscreen exited (repeated)'); }
-      }
-    };
-
-    // ── DevTools size detection ───────────────────────────────
-    const devtoolsInterval = setInterval(() => {
-      const threshold = 160;
-      const open = window.outerWidth - window.innerWidth > threshold ||
-                   window.outerHeight - window.innerHeight > threshold;
-      if (open && !devtoolsRef.current) {
-        devtoolsRef.current = true;
-        reportViolation('DevTools detected');
-      } else if (!open) {
-        devtoolsRef.current = false;
-      }
-    }, 1500);
-
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('contextmenu', onContext);
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('fullscreenchange', onFullscreen);
-
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      document.removeEventListener('contextmenu', onContext);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('fullscreenchange', onFullscreen);
-      clearInterval(devtoolsInterval);
-    };
-  }, [active, reportViolation]);
-
-  const enterFullscreen = useCallback(() => {
-    return document.documentElement.requestFullscreen().catch(() => {});
+  const detach = useCallback(() => {
+    detachRef.current();
   }, []);
 
-  return { enterFullscreen };
+  const reportViolation = useCallback(async (type, description) => {
+    if (isTerminatedRef.current) return;
+    console.log('[Security] Reporting violation:', type);
+    try {
+      const { data } = await api.post('/students/me/violation', {
+        type,
+        description,
+        timestamp: new Date().toISOString(),
+      });
+      console.log('[Security] Violation response:', data);
+      const count = Number(data?.violationCount || 0);
+      setViolationCount(count);
+
+      if (data?.terminated === true) {
+        isTerminatedRef.current = true;
+        setIsTerminated(true);
+        detach();
+      }
+    } catch (err) {
+      console.log('[Security] Violation request error:', err?.response?.status, err?.message);
+      if (err?.response?.status === 403) {
+        isTerminatedRef.current = true;
+        setIsTerminated(true);
+        detach();
+      }
+    }
+  }, [detach]);
+
+  useEffect(() => {
+    if (isTerminatedRef.current) return;
+
+    const opts = { capture: true };
+    let listenersAttached = false;
+
+    // --- TERMINATION TRIGGERS ---
+
+    // Keydown — added to BOTH window AND document (capture) so Monaco cannot block it.
+    // stopImmediatePropagation on ESC prevents both from double-firing in the normal case.
+    const onKeyDown = (e) => {
+      const k = e.key;
+      const code = e.code;
+      const ctrlOrMeta = e.ctrlKey || e.metaKey;
+
+      if (k === 'Alt') {
+        altPressed.current = true;
+      }
+
+      // ESC — terminate. Use stopImmediatePropagation to prevent editor from handling it.
+      if (k === 'Escape' || code === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        reportViolation('escape_key', 'Student pressed Escape key');
+        return;
+      }
+
+      // --- SILENT BLOCKS (no violation, no termination) ---
+
+      if (k === 'F12') { e.preventDefault(); return; }
+
+      // Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C — DevTools
+      if (ctrlOrMeta && e.shiftKey && ['i', 'I', 'j', 'J', 'c', 'C'].includes(k)) {
+        e.preventDefault();
+        return;
+      }
+
+      // Ctrl+U, Ctrl+S, Ctrl+A
+      if (ctrlOrMeta && ['u', 'U', 's', 'S', 'a', 'A'].includes(k)) {
+        e.preventDefault();
+        return;
+      }
+
+      // Ctrl+C, Ctrl+V, Ctrl+X
+      if (ctrlOrMeta && ['c', 'C', 'v', 'V', 'x', 'X'].includes(k)) {
+        e.preventDefault();
+        return;
+      }
+    };
+
+    // Reset altPressed on ANY keyup — prevents stuck state if Alt released outside window
+    const onKeyUp = () => {
+      altPressed.current = false;
+    };
+
+    // Alt+Tab — only terminate if Alt was pressed before blur
+    const onBlur = () => {
+      if (altPressed.current) {
+        altPressed.current = false;
+        reportViolation('alt_tab', 'Student used Alt+Tab to switch away');
+      }
+    };
+
+    // Right click — block only, no violation
+    const onContextMenu = (e) => { e.preventDefault(); };
+
+    // Copy / Cut / Paste — block only, no violation
+    const onCopy  = (e) => { e.preventDefault(); };
+    const onCut   = (e) => { e.preventDefault(); };
+    const onPaste = (e) => { e.preventDefault(); };
+
+    const attachListeners = () => {
+      if (listenersAttached || isTerminatedRef.current) return;
+
+      // Keydown on BOTH window AND document — defense in depth against editor interception
+      window.addEventListener('keydown', onKeyDown, opts);
+      document.addEventListener('keydown', onKeyDown, opts);
+      window.addEventListener('keyup', onKeyUp, opts);
+      window.addEventListener('blur', onBlur, opts);
+      document.addEventListener('contextmenu', onContextMenu, opts);
+      document.addEventListener('copy', onCopy, opts);
+      document.addEventListener('cut', onCut, opts);
+      document.addEventListener('paste', onPaste, opts);
+      listenersAttached = true;
+      setSecurityActive(true);
+    };
+
+    if (enabled && securityActivated.current) {
+      attachListeners();
+    }
+
+    const activationTimer = enabled && !securityActivated.current
+      ? setTimeout(() => {
+          securityActivated.current = true;
+          attachListeners();
+        }, 3000)
+      : null;
+
+    // Cleanup removes listeners only if this effect attached them.
+    const cleanup = () => {
+      if (activationTimer) clearTimeout(activationTimer);
+      if (listenersAttached) {
+        window.removeEventListener('keydown', onKeyDown, opts);
+        document.removeEventListener('keydown', onKeyDown, opts);
+        window.removeEventListener('keyup', onKeyUp, opts);
+        window.removeEventListener('blur', onBlur, opts);
+        document.removeEventListener('contextmenu', onContextMenu, opts);
+        document.removeEventListener('copy', onCopy, opts);
+        document.removeEventListener('cut', onCut, opts);
+        document.removeEventListener('paste', onPaste, opts);
+      }
+      listenersAttached = false;
+      if (isTerminatedRef.current || !enabled) {
+        setSecurityActive(false);
+      }
+    };
+
+    detachRef.current = cleanup;
+
+    return () => {
+      cleanup();
+      detachRef.current = () => {};
+    };
+  }, [enabled, reportViolation]);
+
+  return { isTerminated, violationCount, securityActive };
 }

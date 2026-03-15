@@ -44,7 +44,7 @@ const IcoCheck = () => (
 );
 
 export default function MCQRound() {
-  const { mcqs } = useExam();
+  const { mcqs, loadProblems, problemErrors, problemsLoading, setCurrentRound } = useExam();
   const { student, setStudent } = useAuth();
 
   const [answers, setAnswers]       = useState({});
@@ -52,8 +52,10 @@ export default function MCQRound() {
   const [visited, setVisited]       = useState(new Set());
   const [currentIdx, setCurrentIdx] = useState(0);
   const [submitted, setSubmitted]   = useState(false);
-  const [score, setScore]           = useState(null);
   const [loading, setLoading]       = useState(false);
+  const [checkingAnswers, setCheckingAnswers] = useState(false);
+  const [promotionCountdown, setPromotionCountdown] = useState(null);
+  const [showEliminated, setShowEliminated] = useState(false);
 
   // Shuffle questions once per mount
   const shuffled = useMemo(() => shuffle(mcqs).map(q => ({
@@ -62,8 +64,22 @@ export default function MCQRound() {
   })), [mcqs]);
 
   useEffect(() => {
-    if (student?.r1?.submitted) { setSubmitted(true); setScore(student.r1.score); }
+    if (student?.r1?.submitted) {
+      setSubmitted(true);
+      if (student?.eliminated) setShowEliminated(true);
+    }
   }, [student]);
+
+  useEffect(() => {
+    if (!Number.isInteger(promotionCountdown)) return;
+    if (promotionCountdown <= 0) {
+      setCurrentRound(2);
+      setPromotionCountdown(null);
+      return;
+    }
+    const t = setTimeout(() => setPromotionCountdown((v) => v - 1), 1000);
+    return () => clearTimeout(t);
+  }, [promotionCountdown, setCurrentRound]);
 
   // Mark current question as visited
   useEffect(() => {
@@ -100,16 +116,33 @@ export default function MCQRound() {
       `Submit MCQ round?\n\nAnswered: ${answered} / ${total}\nUnanswered: ${total - answered}\n\nThis cannot be undone.`
     )) return;
     setLoading(true);
+    setCheckingAnswers(true);
     try {
       const { data } = await api.post('/students/me/mcq-submit', { answers });
-      setScore(data.score);
       setSubmitted(true);
-      setStudent(prev => ({ ...prev, r1: { ...prev?.r1, score: data.score, submitted: true } }));
-      toast.success(`Submitted! Score: ${data.score}`);
+      if (data.promoted) {
+        setStudent((prev) => ({
+          ...prev,
+          currentRound: 2,
+          eliminated: false,
+          eliminatedReason: '',
+          r1: { ...prev?.r1, submitted: true },
+        }));
+        setPromotionCountdown(3);
+      } else if (data.eliminated) {
+        setStudent((prev) => ({
+          ...prev,
+          eliminated: true,
+          eliminatedReason: 'Did not pass Round 1',
+          r1: { ...prev?.r1, submitted: true },
+        }));
+        setShowEliminated(true);
+      }
     } catch (err) {
       toast.error(err.response?.data?.error || 'Submit failed');
     } finally {
       setLoading(false);
+      setCheckingAnswers(false);
     }
   };
 
@@ -123,11 +156,61 @@ export default function MCQRound() {
     return                                     { bg: PANEL_BG,               text: '#334155', border: '#151f32' };
   };
 
-  if (!shuffled.length) return (
-    <div className="h-full flex items-center justify-center" style={{ background: DARK_BG, color: '#475569' }}>
-      Loading questions&hellip;
+  if (problemsLoading) return (
+    <div className="h-full flex items-center justify-center gap-3" style={{ background: DARK_BG, color: '#475569' }}>
+      <svg className="w-5 h-5 animate-spin" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10" /></svg>
+      Loading questions…
     </div>
   );
+
+  if (!shuffled.length) {
+    const errMsg = problemErrors?.mcq;
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-4" style={{ background: DARK_BG, color: '#475569' }}>
+        {errMsg ? (
+          <>
+            <svg className="w-8 h-8" style={{ color: '#ef4444' }} fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.95 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+            <p className="text-sm font-medium" style={{ color: '#cbd5e1' }}>Could not load questions</p>
+            <p className="text-xs px-6 text-center" style={{ color: '#64748b' }}>{errMsg}</p>
+            <button
+              onClick={loadProblems}
+              className="mt-1 px-4 py-1.5 rounded-lg text-sm font-semibold"
+              style={{ background: 'rgba(34,197,94,0.15)', color: GREEN, border: '1px solid rgba(34,197,94,0.35)' }}
+            >Retry</button>
+          </>
+        ) : (
+          <p className="text-sm">No questions have been loaded yet.</p>
+        )}
+      </div>
+    );
+  }
+
+  if (showEliminated) {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(5, 10, 25, 0.97)' }}>
+        <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#0f172a', borderColor: 'rgba(100,116,139,0.35)' }}>
+          <div className="text-xs uppercase tracking-[0.2em] font-bold mb-2" style={{ color: '#22c55e' }}>⚡ Speeding Coding</div>
+          <div className="text-5xl mb-4">🛑</div>
+          <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#e2e8f0' }}>You did not qualify for Round 2</h1>
+          <p className="text-sm" style={{ color: '#cbd5e1' }}>Thank you for participating in Speeding Coding!</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (Number.isInteger(promotionCountdown)) {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(9, 20, 12, 0.96)' }}>
+        <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#052e16', borderColor: 'rgba(34,197,94,0.45)' }}>
+          <div className="text-5xl mb-4">✅</div>
+          <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#bbf7d0' }}>You have advanced to Round 2!</h1>
+          <p className="text-lg font-semibold" style={{ color: '#dcfce7' }}>
+            Round 2 starts in {promotionCountdown}...
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex overflow-hidden" style={{ background: DARK_BG, fontFamily: "'Inter', sans-serif" }}>
@@ -143,7 +226,7 @@ export default function MCQRound() {
             <div className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} />
             <span className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: GREEN }}>Round 1 — MCQ</span>
           </div>
-          <div className="text-[11px]" style={{ color: '#475569' }}>{total} questions &middot; &minus;0.25 negative marking</div>
+          <div className="text-[11px]" style={{ color: '#475569' }}>{total} questions</div>
 
           <div className="mt-3">
             <div className="flex justify-between text-[11px] mb-1.5">
@@ -194,7 +277,7 @@ export default function MCQRound() {
           </div>
         </div>
 
-        {/* Submit / Score */}
+        {/* Submit status */}
         <div className="p-4" style={{ borderTop: `1px solid ${BORDER}` }}>
           {!submitted ? (
             <button
@@ -205,12 +288,12 @@ export default function MCQRound() {
               onMouseOver={e => { if (!loading) e.currentTarget.style.background = '#16a34a'; }}
               onMouseOut={e => { if (!loading) e.currentTarget.style.background = GREEN; }}
             >
-              {loading ? 'Submitting\u2026' : `Submit MCQ (${answered}/${total})`}
+              {loading ? 'Checking your answers...' : `Submit MCQ (${answered}/${total})`}
             </button>
           ) : (
             <div className="text-center py-1">
-              <div className="text-2xl font-black" style={{ color: GREEN }}>{score?.toFixed(2)}</div>
-              <div className="text-[11px] mt-0.5" style={{ color: '#475569' }}>Final Score &middot; Submitted &#10003;</div>
+              <div className="text-sm font-semibold" style={{ color: '#cbd5e1' }}>Submitted successfully</div>
+              {checkingAnswers && <div className="text-[11px] mt-0.5" style={{ color: '#94a3b8' }}>Checking your answers...</div>}
             </div>
           )}
         </div>
@@ -235,12 +318,6 @@ export default function MCQRound() {
               {currentQ.difficulty}
             </span>
           )}
-          {currentQ?.points && (
-            <span className="text-[11px]" style={{ color: '#475569' }}>
-              {currentQ.points} pt{currentQ.points !== 1 ? 's' : ''}
-            </span>
-          )}
-
           <div className="flex-1" />
 
           {/* Flag toggle */}

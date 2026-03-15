@@ -1,12 +1,29 @@
 import axios from 'axios';
 
+export const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: `${BASE_URL}/api`,
   headers: { 'Content-Type': 'application/json' },
 });
 
 // Attach student JWT
 api.interceptors.request.use(cfg => {
+  const locallyTerminated = sessionStorage.getItem('sc_terminated') === '1';
+  const hasStudentToken = !!localStorage.getItem('sc_token');
+  if (locallyTerminated && hasStudentToken) {
+    return Promise.reject({
+      response: {
+        status: 403,
+        data: {
+          error: 'You have been terminated from the exam',
+          reason: 'policy_violation',
+        },
+      },
+      config: cfg,
+    });
+  }
+
   const token = localStorage.getItem('sc_token');
   if (token) cfg.headers.Authorization = `Bearer ${token}`;
   const adminToken = localStorage.getItem('sc_admin_token');

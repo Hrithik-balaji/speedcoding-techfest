@@ -1,3 +1,4 @@
+require('node:dns/promises').setServers(['8.8.8.8', '8.8.4.4']);
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -10,19 +11,25 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 
 // ── Security Middleware ──────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false,
+}));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // ── CORS ─────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'http://localhost:5173',
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
   'http://localhost:3000',
-  'http://localhost:4173',
-];
+].filter(Boolean);
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error('Not allowed by CORS'));
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
   },
   credentials: true,
 }));
@@ -30,6 +37,11 @@ app.use(cors({
 // ── Body Parser ───────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// ── Public Ping (no auth, bypasses rate limiter) ─────────────
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() });
+});
 
 // ── Rate Limiting ─────────────────────────────────────────────
 const apiLimiter = rateLimit({
@@ -68,11 +80,38 @@ app.use((err, req, res, next) => {
 
 // ── MongoDB + Start ───────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
+let server;
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  if (!server) {
+    process.exit(0);
+    return;
+  }
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+async function checkJudge0() {
+  const base = process.env.JUDGE0_URL || 'https://ce.judge0.com';
+  try {
+    const res = await fetch(`${base}/languages`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    console.log('✅ Judge0 ready');
+  } catch (err) {
+    console.error('❌ Judge0 is DOWN — fix before starting exam', err.message);
+  }
+}
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✅ MongoDB connected');
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+    server = app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      checkJudge0();
+    });
   })
   .catch(err => {
     console.error('❌ MongoDB connection failed:', err.message);
