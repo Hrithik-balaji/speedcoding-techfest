@@ -102,6 +102,15 @@ const StudentSchema = new mongoose.Schema({
   r1StartTime:  { type: Number },
   r2StartTime:  { type: Number },
   r3StartTime:  { type: Number },
+
+  // Admin override history
+  overrideLog: [{
+    changedAt:  { type: Date, default: Date.now },
+    r1Score:    { type: Number },
+    r2Score:    { type: Number },
+    r3Score:    { type: Number },
+    changedBy:  { type: String, default: 'admin' },
+  }],
 }, { timestamps: true });
 
 // Virtual: R3 problems solved count

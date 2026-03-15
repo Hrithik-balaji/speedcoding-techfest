@@ -41,7 +41,10 @@ app.get('/api/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// ── Rate Limiting ─────────────────────────────────────────────
+// ── Admin routes get their own generous limiter — mounted BEFORE the global one
+app.use('/api/admin',       require('./routes/admin'));
+
+// ── Rate Limiting (all other /api/* routes) ───────────────────
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
@@ -54,7 +57,6 @@ app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/students',    require('./routes/students'));
 app.use('/api/problems',    require('./routes/problems'));
 app.use('/api/submissions', require('./routes/submissions'));
-app.use('/api/admin',       require('./routes/admin'));
 app.use('/api/exec',        require('./routes/exec'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api/timer',       require('./routes/timer'));

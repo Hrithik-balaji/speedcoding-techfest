@@ -1,8 +1,20 @@
 const router = require('express').Router();
+const rateLimit = require('express-rate-limit');
 const { adminProtect } = require('../middleware/auth');
 const Student = require('../models/Student');
 const Submission = require('../models/Submission');
 const ExamState = require('../models/ExamState');
+
+// Generous rate limit for admin routes (keyed by user id, not raw IP)
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+  keyGenerator: (req) => (req.user && req.user.id) ? req.user.id : req.ip,
+  message: { error: 'Too many admin requests, please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+router.use(adminLimiter);
 
 // Helper: get or create global exam state
 async function getState() {
@@ -133,6 +145,14 @@ router.patch('/students/:id/override', adminProtect, async (req, res) => {
     if (r2Score !== undefined) { const v = Number(r2Score); log('R2 Score', student.r2.score || 0, v); student.r2.score = v; student.overrides.set('r2Score', v); }
     if (r3Score !== undefined) { const v = Number(r3Score); log('R3 Score', student.r3.score || 0, v); student.r3.score = v; student.overrides.set('r3Score', v); }
 
+    student.overrideLog.push({
+      changedAt: new Date(),
+      r1Score: r1Score !== undefined ? Number(r1Score) : student.r1.score,
+      r2Score: r2Score !== undefined ? Number(r2Score) : (student.r2?.score || 0),
+      r3Score: r3Score !== undefined ? Number(r3Score) : (student.r3?.score || 0),
+      changedBy: 'admin',
+    });
+
     await student.save();
     await state.save();
     res.json(student);
@@ -219,6 +239,72 @@ router.get('/round-status', adminProtect, async (_req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/scores — all student scores and times
+router.get('/scores', adminProtect, async (req, res) => {
+  try {
+    const state = await getState();
+    const contestStartTime = state.contestStartTime; // epoch ms or null
+
+    const students = await Student.find().select(
+      '_id name rollNo currentRound eliminated terminated r1 r2 r3 mcqCorrectCount mcqCompletedAt debugSolvedCount debugCompletedAt codingSolvedCount codingCompletedAt totalTimeMs finalRank overrideLog'
+    );
+
+    function fmtMs(ms) {
+      if (ms === null || ms === undefined || isNaN(ms) || ms < 0) return null;
+      const totalSec = Math.floor(ms / 1000);
+      const min = Math.floor(totalSec / 60);
+      const sec = totalSec % 60;
+      return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    }
+
+    const result = students.map((s) => {
+      const mcqTs    = s.mcqCompletedAt    ? new Date(s.mcqCompletedAt).getTime()    : null;
+      const debugTs  = s.debugCompletedAt  ? new Date(s.debugCompletedAt).getTime()  : null;
+      const codingTs = s.codingCompletedAt ? new Date(s.codingCompletedAt).getTime() : null;
+
+      const r1TimeTaken = (mcqTs && contestStartTime) ? fmtMs(mcqTs - contestStartTime) : null;
+      const r2TimeTaken = (debugTs && mcqTs)           ? fmtMs(debugTs - mcqTs)          : null;
+      const r3TimeTaken = (codingTs && debugTs)         ? fmtMs(codingTs - debugTs)       : null;
+      const totalTime   = (codingTs && contestStartTime) ? fmtMs(codingTs - contestStartTime) : null;
+
+      return {
+        _id:              s._id,
+        name:             s.name,
+        rollNo:           s.rollNo,
+        currentRound:     s.currentRound,
+        eliminated:       s.eliminated,
+        terminated:       s.terminated,
+        mcqCorrectCount:  s.mcqCorrectCount,
+        mcqCompletedAt:   s.mcqCompletedAt,
+        r1Score:          s.r1?.score ?? 0,
+        debugSolvedCount: s.debugSolvedCount,
+        debugCompletedAt: s.debugCompletedAt,
+        r2Score:          s.r2?.score ?? 0,
+        codingSolvedCount: s.codingSolvedCount,
+        codingCompletedAt: s.codingCompletedAt,
+        r3Score:          s.r3?.score ?? 0,
+        totalTimeMs:      s.totalTimeMs,
+        finalRank:        s.finalRank,
+        overrideLog:      s.overrideLog || [],
+        r1TimeTaken,
+        r2TimeTaken,
+        r3TimeTaken,
+        totalTime,
+      };
+    });
+
+    result.sort((a, b) => {
+      const aRank = a.finalRank != null ? a.finalRank : Infinity;
+      const bRank = b.finalRank != null ? b.finalRank : Infinity;
+      return aRank - bRank;
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -21,6 +21,7 @@ const MENU = [
   { key: 'bank', label: 'Question Bank', icon: 'book' },
   { key: 'import', label: 'Import Questions', icon: 'upload' },
   { key: 'leaderboard', label: 'Leaderboard', icon: 'trophy' },
+  { key: 'scores', label: 'Scores & Times', icon: 'scores' },
   { key: 'settings', label: 'Contest Settings', icon: 'settings' },
 ];
 
@@ -43,6 +44,7 @@ function Icon({ name, className = 'w-4 h-4' }) {
   if (name === 'kick') return <svg {...common}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>;
   if (name === 'upload') return <svg {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>;
   if (name === 'download') return <svg {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>;
+  if (name === 'scores') return <svg {...common}><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></svg>;
   return <svg {...common}><circle cx="12" cy="12" r="10" /></svg>;
 }
 
@@ -212,6 +214,11 @@ export default function AdminPage() {
   const [overrideOpenId, setOverrideOpenId] = useState('');
   const [overrideForm, setOverrideForm] = useState({ r1Score: '', r2Score: '', r3Score: '' });
   const [overrideSaving, setOverrideSaving] = useState(false);
+  const [scoresData, setScoresData] = useState([]);
+  const [scoresLoading, setScoresLoading] = useState(false);
+  const [scoresLoaded, setScoresLoaded] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [secondsAgo, setSecondsAgo] = useState(0);
 
   const fetchContestState = useCallback(async () => {
     const { data } = await api.get('/admin/state');
@@ -359,51 +366,73 @@ export default function AdminPage() {
     return data;
   }, []);
 
+  const fetchScores = useCallback(async () => {
+    setScoresLoading(true);
+    try {
+      const { data } = await api.get('/admin/scores');
+      setScoresData(data);
+      setScoresLoaded(true);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load scores');
+    } finally {
+      setScoresLoading(false);
+    }
+  }, []);
+
+  // Single sequential poll — fetches one endpoint at a time with small gaps
+  const fetchAllAdminData = useCallback(async () => {
+    try {
+      await fetchStudents();
+      await new Promise((r) => setTimeout(r, 200));
+      await fetchViolations();
+      await new Promise((r) => setTimeout(r, 200));
+      await fetchContestState();
+      await new Promise((r) => setTimeout(r, 200));
+      await fetchTimerStatus();
+      await new Promise((r) => setTimeout(r, 200));
+      await fetchRoundStatus();
+      await new Promise((r) => setTimeout(r, 200));
+      await fetchFinishers();
+      setLastUpdatedAt(Date.now());
+    } catch (err) {
+      console.error('Admin poll error:', err);
+    }
+  }, [fetchStudents, fetchViolations, fetchContestState, fetchTimerStatus, fetchRoundStatus, fetchFinishers]);
+
   const refreshAll = useCallback(async () => {
     setBusy(true);
     try {
-      await Promise.all([
-        fetchStudents(),
-        fetchViolations(),
-        fetchContestState(),
-        fetchEvents(),
-        fetchTimerStatus(),
-        fetchRoundStatus(),
-        fetchFinishers(),
-      ]);
+      await fetchAllAdminData();
+      // Fetch events (includes /submissions/admin/all) only on manual refresh
+      await fetchEvents().catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to refresh dashboard');
     } finally {
       setBusy(false);
     }
-  }, [fetchContestState, fetchEvents, fetchFinishers, fetchRoundStatus, fetchStudents, fetchTimerStatus, fetchViolations]);
+  }, [fetchAllAdminData, fetchEvents]);
 
+  const POLL_INTERVAL = 30000; // 30 seconds
+
+  // Single unified polling loop — replaces all previous setInterval calls
   useEffect(() => {
     if (!isAdmin) return;
-    refreshAll();
-    const id = setInterval(() => {
-      fetchEvents().catch(() => {});
-      fetchStudents().catch(() => {});
-      fetchViolations().catch(() => {});
-    }, 10000);
+    fetchAllAdminData(); // immediate on mount
+    const id = setInterval(fetchAllAdminData, POLL_INTERVAL);
     return () => clearInterval(id);
-  }, [isAdmin, refreshAll, fetchEvents, fetchStudents, fetchViolations]);
+  }, [isAdmin, fetchAllAdminData]);
 
+  // 1-second ticker just for the "last updated" display — no HTTP traffic
   useEffect(() => {
-    if (!isAdmin) return;
     const id = setInterval(() => {
-      fetchTimerStatus().catch(() => {});
-      fetchRoundStatus().catch(() => {});
-      fetchFinishers().catch(() => {});
-    }, 15000);
+      if (lastUpdatedAt) setSecondsAgo(Math.floor((Date.now() - lastUpdatedAt) / 1000));
+    }, 1000);
     return () => clearInterval(id);
-  }, [fetchTimerStatus, fetchRoundStatus, fetchFinishers, isAdmin]);
+  }, [lastUpdatedAt]);
 
   useEffect(() => {
     if (!isAdmin) return;
-    if (activeMenu === 'bank') {
-      fetchQuestionBank();
-    }
+    if (activeMenu === 'bank') fetchQuestionBank();
   }, [activeMenu, fetchQuestionBank, isAdmin]);
 
   useEffect(() => {
@@ -411,6 +440,11 @@ export default function AdminPage() {
     if (activeMenu !== 'import') return;
     fetchQuestionsForType(qmTab);
   }, [activeMenu, fetchQuestionsForType, isAdmin, qmTab]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (activeMenu === 'scores') fetchScores();
+  }, [activeMenu, fetchScores, isAdmin]);
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -528,6 +562,7 @@ export default function AdminPage() {
       toast.success('Score overridden successfully');
       setOverrideOpenId('');
       await fetchStudents();
+      if (scoresLoaded) await fetchScores();
     } catch {
       toast.error('Failed to override score');
     } finally {
@@ -891,6 +926,11 @@ export default function AdminPage() {
             <span className={`px-3 py-1.5 rounded-full border text-xs font-semibold ${stateBadge.className}`}>
               {stateBadge.text}
             </span>
+            {lastUpdatedAt && (
+              <span className="text-xs" style={{ color: COLORS.muted }}>
+                Updated {secondsAgo}s ago
+              </span>
+            )}
             <button
               onClick={refreshAll}
               disabled={busy}
@@ -1491,6 +1531,143 @@ export default function AdminPage() {
                 </div>
               ))}
             </div>
+          </section>
+        )}
+
+        {activeMenu === 'scores' && (
+          <section className="rounded-2xl border p-4" style={{ background: COLORS.card, borderColor: COLORS.border }}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-base font-semibold">Scores &amp; Times</h3>
+                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>All student performance data. Click Override to adjust scores.</p>
+              </div>
+              <button
+                onClick={fetchScores}
+                disabled={scoresLoading}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold"
+                style={{ borderColor: COLORS.border, background: COLORS.card }}
+              >
+                <Icon name="refresh" className={`w-3.5 h-3.5 ${scoresLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
+
+            {scoresLoading && !scoresData.length ? (
+              <div className="py-10 text-center text-sm" style={{ color: COLORS.muted }}>
+                <span className="inline-flex items-center gap-2"><Icon name="refresh" className="w-4 h-4 animate-spin" /> Loading scores...</span>
+              </div>
+            ) : (
+              <div className="overflow-auto rounded-xl border" style={{ borderColor: COLORS.border }}>
+                <table className="w-full text-sm min-w-[1200px]">
+                  <thead style={{ background: '#0f172a' }}>
+                    <tr>
+                      {['Rank', 'Name', 'Roll No', 'Status', 'R1 Score', 'R1 Time', 'R2 Score', 'R2 Time', 'R3 Score', 'R3 Time', 'Total Time', 'Actions'].map((h) => (
+                        <th key={h} className="text-left px-3 py-3 font-semibold" style={{ color: '#cbd5e1' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scoresData.map((row) => {
+                      const isFinished   = Boolean(row.codingCompletedAt);
+                      const isTerminated = Boolean(row.terminated);
+                      const isEliminated = Boolean(row.eliminated);
+
+                      const statusBadge = isFinished
+                        ? { label: 'Finished',   cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' }
+                        : isTerminated
+                        ? { label: 'Terminated', cls: 'bg-red-500/15 text-red-300 border-red-500/30' }
+                        : isEliminated
+                        ? { label: 'Eliminated', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' }
+                        : { label: 'Active',     cls: 'bg-blue-500/15 text-blue-300 border-blue-500/30' };
+
+                      const r1Time = row.r1TimeTaken || ((isEliminated || isTerminated) ? 'DNF' : '--');
+                      const r2Time = row.r2TimeTaken || ((isEliminated || isTerminated) && row.mcqCompletedAt ? 'DNF' : '--');
+                      const r3Time = row.r3TimeTaken || ((isEliminated || isTerminated) && row.debugCompletedAt ? 'DNF' : '--');
+                      const totalTimeDisplay = row.totalTime || '--';
+                      const timeColor = (t) => t === 'DNF' ? '#fca5a5' : t === '--' ? COLORS.muted : '#86efac';
+
+                      return (
+                        <Fragment key={row._id}>
+                          <tr className="border-t hover:bg-slate-800/35" style={{ borderColor: COLORS.border }}>
+                            <td className="px-3 py-3 font-mono">{row.finalRank ?? '--'}</td>
+                            <td className="px-3 py-3 font-medium">{row.name}</td>
+                            <td className="px-3 py-3 text-slate-300">{row.rollNo}</td>
+                            <td className="px-3 py-3">
+                              <span className={`px-2 py-1 rounded-full border text-xs font-semibold ${statusBadge.cls}`}>
+                                {statusBadge.label}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 font-semibold">{row.r1Score}</td>
+                            <td className="px-3 py-3 font-mono" style={{ color: timeColor(r1Time) }}>{r1Time}</td>
+                            <td className="px-3 py-3 font-semibold">{row.r2Score}</td>
+                            <td className="px-3 py-3 font-mono" style={{ color: timeColor(r2Time) }}>{r2Time}</td>
+                            <td className="px-3 py-3 font-semibold">{row.r3Score}</td>
+                            <td className="px-3 py-3 font-mono" style={{ color: timeColor(r3Time) }}>{r3Time}</td>
+                            <td className="px-3 py-3 font-mono" style={{ color: totalTimeDisplay === '--' ? COLORS.muted : '#fcd34d' }}>{totalTimeDisplay}</td>
+                            <td className="px-3 py-3">
+                              <button
+                                className="px-2 py-1 rounded border text-xs hover:bg-blue-500/15"
+                                style={{ borderColor: 'rgba(59,130,246,0.35)', color: '#bfdbfe' }}
+                                onClick={() => openOverrideFor({ _id: row._id, r1: { score: row.r1Score }, r2: { score: row.r2Score }, r3: { score: row.r3Score } })}
+                              >
+                                <span className="inline-flex items-center gap-1"><Icon name="edit" className="w-3 h-3" />Override</span>
+                              </button>
+                            </td>
+                          </tr>
+
+                          {overrideOpenId === row._id && (
+                            <tr className="border-t" style={{ borderColor: COLORS.border, background: 'rgba(15,23,42,0.7)' }}>
+                              <td colSpan={12} className="px-3 py-4">
+                                <div className="rounded-xl border p-4" style={{ borderColor: COLORS.border, background: COLORS.card }}>
+                                  <h4 className="text-sm font-semibold mb-3">Override Score: {row.name}</h4>
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                                    <div>
+                                      <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 1 Score</label>
+                                      <input type="number" min="0" className="w-full rounded-lg px-3 py-2 border outline-none" style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }} value={overrideForm.r1Score} onChange={(e) => setOverrideForm((prev) => ({ ...prev, r1Score: e.target.value }))} />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 2 Score</label>
+                                      <input type="number" min="0" className="w-full rounded-lg px-3 py-2 border outline-none" style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }} value={overrideForm.r2Score} onChange={(e) => setOverrideForm((prev) => ({ ...prev, r2Score: e.target.value }))} />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 3 Score</label>
+                                      <input type="number" min="0" className="w-full rounded-lg px-3 py-2 border outline-none" style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }} value={overrideForm.r3Score} onChange={(e) => setOverrideForm((prev) => ({ ...prev, r3Score: e.target.value }))} />
+                                    </div>
+                                  </div>
+                                  {row.overrideLog?.length > 0 && (
+                                    <div className="mb-4">
+                                      <div className="text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Override History</div>
+                                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                                        {[...row.overrideLog].reverse().map((entry, idx) => (
+                                          <div key={idx} className="text-xs rounded px-2 py-1 border" style={{ borderColor: COLORS.border, color: '#cbd5e1' }}>
+                                            {new Date(entry.changedAt).toLocaleString()} — R1: {entry.r1Score ?? '—'}, R2: {entry.r2Score ?? '—'}, R3: {entry.r3Score ?? '—'}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div className="flex items-center gap-2 justify-end">
+                                    <button onClick={closeOverride} disabled={overrideSaving} className="px-3 py-2 rounded-lg border text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ borderColor: COLORS.border, color: '#cbd5e1', background: '#334155' }}>Cancel</button>
+                                    <button onClick={() => saveOverride(row._id)} disabled={overrideSaving} className="px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: COLORS.accent, color: '#052e16' }}>{overrideSaving ? 'Saving...' : 'Save Override'}</button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    {!scoresData.length && !scoresLoading && (
+                      <tr>
+                        <td colSpan={12} className="px-3 py-8 text-center" style={{ color: COLORS.muted }}>
+                          No student data available yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
 
