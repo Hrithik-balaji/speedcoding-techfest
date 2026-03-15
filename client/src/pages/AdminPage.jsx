@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
@@ -209,6 +209,9 @@ export default function AdminPage() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoadingId, setDeleteLoadingId] = useState('');
   const [fadingRows, setFadingRows] = useState({});
+  const [overrideOpenId, setOverrideOpenId] = useState('');
+  const [overrideForm, setOverrideForm] = useState({ r1Score: '', r2Score: '', r3Score: '' });
+  const [overrideSaving, setOverrideSaving] = useState(false);
 
   const fetchContestState = useCallback(async () => {
     const { data } = await api.get('/admin/state');
@@ -481,6 +484,56 @@ export default function AdminPage() {
   const warnStudent = (id) => act(() => api.patch(`/admin/students/${id}/warn`), 'Student warned');
   const kickStudent = (id) => act(() => api.patch(`/admin/students/${id}/kick`), 'Student kicked');
   const reinstateStudent = (id) => act(() => api.patch(`/admin/students/${id}/reinstate`, { reason: 'Manual reinstatement' }), 'Student reinstated');
+
+  const openOverrideFor = (student) => {
+    setOverrideOpenId(student._id);
+    setOverrideForm({
+      r1Score: String(Number(student?.r1?.score ?? 0)),
+      r2Score: String(Number(student?.r2?.score ?? 0)),
+      r3Score: String(Number(student?.r3?.score ?? 0)),
+    });
+  };
+
+  const closeOverride = () => {
+    if (overrideSaving) return;
+    setOverrideOpenId('');
+  };
+
+  const saveOverride = async (studentId) => {
+    if (overrideSaving) return;
+
+    const toValidScore = (value) => {
+      if (value === null || value === undefined || String(value).trim() === '') return null;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return n;
+    };
+
+    const r1 = toValidScore(overrideForm.r1Score);
+    const r2 = toValidScore(overrideForm.r2Score);
+    const r3 = toValidScore(overrideForm.r3Score);
+
+    if (r1 === null || r2 === null || r3 === null) {
+      toast.error('All round scores must be numbers >= 0');
+      return;
+    }
+
+    setOverrideSaving(true);
+    try {
+      await api.patch(`/admin/students/${studentId}/override`, {
+        r1Score: r1,
+        r2Score: r2,
+        r3Score: r3,
+      });
+      toast.success('Score overridden successfully');
+      setOverrideOpenId('');
+      await fetchStudents();
+    } catch {
+      toast.error('Failed to override score');
+    } finally {
+      setOverrideSaving(false);
+    }
+  };
 
   const reinstateFromViolationRow = (row) => {
     const ok = window.confirm(`Reinstate ${row.studentName}? They will be able to continue the exam.`);
@@ -914,28 +967,100 @@ export default function AdminPage() {
                 </thead>
                 <tbody>
                   {filteredStudents.map((s) => (
-                    <tr key={s._id} className="border-t hover:bg-slate-800/35" style={{ borderColor: COLORS.border }}>
-                      <td className="px-3 py-3 font-medium">{s.name}</td>
-                      <td className="px-3 py-3 text-slate-300">{s.rollNo}</td>
-                      <td className="px-3 py-3 text-xs text-slate-400">{[s.college, s.department].filter(Boolean).join(' • ') || 'N/A'}</td>
-                      <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-blue-500/20 text-blue-300">{s.r2?.solved?.length || 0}</span></td>
-                      <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300">{s.r3?.solved?.length || 0}</span></td>
-                      <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-red-500/20 text-red-300">{s.violations?.length || 0}</span></td>
-                      <td className="px-3 py-3 text-slate-400">{formatAgo(s.lastSeen)}</td>
-                      <td className="px-3 py-3"><span className={`px-2 py-1 rounded-full border text-xs ${getStatusColor(s.status)}`}>{s.status}</span></td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <button className="px-2 py-1 rounded border text-xs hover:bg-slate-700/40" style={{ borderColor: COLORS.border }} onClick={() => setSelectedProfile(s)}><span className="inline-flex items-center gap-1"><Icon name="eye" className="w-3 h-3" />View</span></button>
-                          <button className="px-2 py-1 rounded border text-xs hover:bg-amber-500/15" style={{ borderColor: 'rgba(245,158,11,0.35)', color: '#fbbf24' }} onClick={() => warnStudent(s._id)}><span className="inline-flex items-center gap-1"><Icon name="warn" className="w-3 h-3" />Warn</span></button>
-                          <button className="px-2 py-1 rounded border text-xs hover:bg-red-500/15" style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#fca5a5' }} onClick={() => kickStudent(s._id)}><span className="inline-flex items-center gap-1"><Icon name="kick" className="w-3 h-3" />Kick</span></button>
-                          <button className="px-2 py-1 rounded border text-xs hover:bg-emerald-500/15" style={{ borderColor: 'rgba(34,197,94,0.35)', color: '#86efac' }} onClick={() => reinstateStudent(s._id)}>Reinstate</button>
-                        </div>
-                      </td>
-                    </tr>
+                    <Fragment key={s._id}>
+                      <tr key={s._id} className="border-t hover:bg-slate-800/35" style={{ borderColor: COLORS.border }}>
+                        <td className="px-3 py-3 font-medium">{s.name}</td>
+                        <td className="px-3 py-3 text-slate-300">{s.rollNo}</td>
+                        <td className="px-3 py-3 text-xs text-slate-400">{[s.college, s.department].filter(Boolean).join(' • ') || 'N/A'}</td>
+                        <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-blue-500/20 text-blue-300">{s.r2?.solved?.length || 0}</span></td>
+                        <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300">{s.r3?.solved?.length || 0}</span></td>
+                        <td className="px-3 py-3"><span className="px-2 py-1 rounded-md bg-red-500/20 text-red-300">{s.violations?.length || 0}</span></td>
+                        <td className="px-3 py-3 text-slate-400">{formatAgo(s.lastSeen)}</td>
+                        <td className="px-3 py-3"><span className={`px-2 py-1 rounded-full border text-xs ${getStatusColor(s.status)}`}>{s.status}</span></td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <button className="px-2 py-1 rounded border text-xs hover:bg-slate-700/40" style={{ borderColor: COLORS.border }} onClick={() => setSelectedProfile(s)}><span className="inline-flex items-center gap-1"><Icon name="eye" className="w-3 h-3" />View</span></button>
+                            <button
+                              className="px-2 py-1 rounded border text-xs hover:bg-blue-500/15"
+                              style={{ borderColor: 'rgba(59,130,246,0.35)', color: '#bfdbfe' }}
+                              onClick={() => openOverrideFor(s)}
+                            >
+                              <span className="inline-flex items-center gap-1"><Icon name="edit" className="w-3 h-3" />Override</span>
+                            </button>
+                            <button className="px-2 py-1 rounded border text-xs hover:bg-amber-500/15" style={{ borderColor: 'rgba(245,158,11,0.35)', color: '#fbbf24' }} onClick={() => warnStudent(s._id)}><span className="inline-flex items-center gap-1"><Icon name="warn" className="w-3 h-3" />Warn</span></button>
+                            <button className="px-2 py-1 rounded border text-xs hover:bg-red-500/15" style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#fca5a5' }} onClick={() => kickStudent(s._id)}><span className="inline-flex items-center gap-1"><Icon name="kick" className="w-3 h-3" />Kick</span></button>
+                            <button className="px-2 py-1 rounded border text-xs hover:bg-emerald-500/15" style={{ borderColor: 'rgba(34,197,94,0.35)', color: '#86efac' }} onClick={() => reinstateStudent(s._id)}>Reinstate</button>
+                          </div>
+                        </td>
+                      </tr>
+
+                      {overrideOpenId === s._id && (
+                        <tr className="border-t" style={{ borderColor: COLORS.border, background: 'rgba(15,23,42,0.7)' }}>
+                          <td colSpan={9} className="px-3 py-4">
+                            <div className="rounded-xl border p-4" style={{ borderColor: COLORS.border, background: COLORS.card }}>
+                              <h4 className="text-sm font-semibold mb-3">Override Score: {s.name}</h4>
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                                <div>
+                                  <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 1 Score</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    className="w-full rounded-lg px-3 py-2 border outline-none"
+                                    style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }}
+                                    value={overrideForm.r1Score}
+                                    onChange={(e) => setOverrideForm((prev) => ({ ...prev, r1Score: e.target.value }))}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 2 Score</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    className="w-full rounded-lg px-3 py-2 border outline-none"
+                                    style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }}
+                                    value={overrideForm.r2Score}
+                                    onChange={(e) => setOverrideForm((prev) => ({ ...prev, r2Score: e.target.value }))}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-semibold mb-1" style={{ color: COLORS.muted }}>Round 3 Score</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    className="w-full rounded-lg px-3 py-2 border outline-none"
+                                    style={{ background: '#0f172a', borderColor: COLORS.border, color: COLORS.text }}
+                                    value={overrideForm.r3Score}
+                                    onChange={(e) => setOverrideForm((prev) => ({ ...prev, r3Score: e.target.value }))}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 justify-end">
+                                <button
+                                  onClick={closeOverride}
+                                  disabled={overrideSaving}
+                                  className="px-3 py-2 rounded-lg border text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                  style={{ borderColor: COLORS.border, color: '#cbd5e1', background: '#334155' }}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={() => saveOverride(s._id)}
+                                  disabled={overrideSaving}
+                                  className="px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                  style={{ background: COLORS.accent, color: '#052e16' }}
+                                >
+                                  {overrideSaving ? 'Saving...' : 'Save Override'}
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                   {!filteredStudents.length && (
                     <tr>
-                      <td colSpan={10} className="px-3 py-8 text-center text-slate-400">No students match current filters.</td>
+                      <td colSpan={9} className="px-3 py-8 text-center text-slate-400">No students match current filters.</td>
                     </tr>
                   )}
                 </tbody>
