@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
-import Editor from '@monaco-editor/react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { useExam } from '../hooks/useExam';
 import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
@@ -19,6 +18,50 @@ const LANGUAGE_LABELS = {
   cpp: 'C++17',
 };
 
+const MonacoEditor = lazy(() => import('@monaco-editor/react'));
+
+const EDITOR_OPTIONS = {
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  fontSize: 14,
+  fontFamily: "'JetBrains Mono', monospace",
+  wordWrap: 'on',
+  automaticLayout: true,
+  padding: { top: 12 },
+  renderLineHighlight: 'line',
+  quickSuggestions: false,
+  parameterHints: { enabled: false },
+  suggestOnTriggerCharacters: false,
+  acceptSuggestionOnEnter: 'off',
+  tabCompletion: 'off',
+  wordBasedSuggestions: false,
+  contextmenu: false,
+  tabSize: 4,
+  lineNumbers: 'on',
+};
+
+const EDITOR_LOADING_STYLE = {
+  height: '100%',
+  background: '#1e1e1e',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#888',
+  fontFamily: 'monospace',
+  borderRadius: '8px',
+};
+
+function configureMonaco(monaco) {
+  monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: true,
+  });
+  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: true,
+  });
+}
+
 function VerdictBadge({ verdict }) {
   const colors = {
     Accepted: 'bg-easy/15 text-easy',
@@ -29,7 +72,7 @@ function VerdictBadge({ verdict }) {
   return <span className={`verdict-badge ${colors[verdict] || 'bg-border text-muted'}`}>{verdict}</span>;
 }
 
-export default function CodingRound({ roundType }) {
+export default function CodingRound({ roundType, onContestComplete }) {
   const { codingProblems, loadProblems, problemErrors, problemsLoading } = useExam();
   const { student } = useAuth();
 
@@ -45,6 +88,7 @@ export default function CodingRound({ roundType }) {
   const [isRunning, setIsRunning] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [contestFinished, setContestFinished] = useState(false);
+  const [editorReady, setEditorReady] = useState(false);
 
   const cooldownRef = useRef(null);
 
@@ -75,12 +119,6 @@ export default function CodingRound({ roundType }) {
     return () => {
       if (cooldownRef.current) clearInterval(cooldownRef.current);
     };
-  }, []);
-
-  useEffect(() => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
   }, []);
 
   useEffect(() => {
@@ -138,12 +176,6 @@ export default function CodingRound({ roundType }) {
 
     setLanguage(nextLang);
     setEditorCodes((prev) => ({ ...prev, [selectedId]: STARTER_CODE[nextLang] }));
-
-    // Native select interaction may exit fullscreen in some environments.
-    // Re-request fullscreen in the same interaction cycle.
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
   };
 
   const buttonDisabled = isRunning || cooldown > 0;
@@ -202,6 +234,7 @@ export default function CodingRound({ roundType }) {
 
       if (data.correct && data.finished) {
         setContestFinished(true);
+        onContestComplete?.();
       }
     } catch (err) {
       if (err?.response?.data?.error === 'cooldown') {
@@ -282,27 +315,52 @@ export default function CodingRound({ roundType }) {
           </select>
         </div>
 
-        <div className="flex-[0_0_62%] min-h-[120px]" onContextMenu={(e) => e.preventDefault()}>
-          <Editor
-            height="100%"
-            language={language === 'cpp' ? 'cpp' : language}
-            value={activeCode}
-            onChange={(value) => {
-              if (!selectedId) return;
-              setEditorCodes((prev) => ({ ...prev, [selectedId]: value || '' }));
-            }}
-            theme="vs-dark"
-            options={{
-              fontSize: 14,
-              fontFamily: "'JetBrains Mono', monospace",
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              tabSize: 4,
-              lineNumbers: 'on',
-              contextmenu: false,
-            }}
-          />
+        <div className="flex-[0_0_62%] min-h-[120px] relative" onContextMenu={(e) => e.preventDefault()}>
+          {!editorReady && (
+            <textarea
+              value={activeCode}
+              onChange={(e) => {
+                if (!selectedId) return;
+                setEditorCodes((prev) => ({ ...prev, [selectedId]: e.target.value }));
+              }}
+              style={{
+                width: '100%',
+                height: '100%',
+                background: '#1e1e1e',
+                color: '#d4d4d4',
+                fontFamily: 'monospace',
+                fontSize: '14px',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '8px',
+                resize: 'none',
+              }}
+              placeholder="Editor loading..."
+            />
+          )}
+          <div style={{ display: editorReady ? 'block' : 'none', height: '100%' }}>
+            <Suspense fallback={<div style={EDITOR_LOADING_STYLE}>Loading editor...</div>}>
+              <MonacoEditor
+                height="100%"
+                language={language === 'cpp' ? 'cpp' : language}
+                value={activeCode}
+                onChange={(value) => {
+                  if (!selectedId) return;
+                  setEditorCodes((prev) => ({ ...prev, [selectedId]: value || '' }));
+                }}
+                loading="Loading editor..."
+                theme="vs-dark"
+                beforeMount={configureMonaco}
+                onMount={() => setEditorReady(true)}
+                options={EDITOR_OPTIONS}
+              />
+            </Suspense>
+          </div>
+          {!editorReady && (
+            <div className="absolute right-3 bottom-3 text-xs pointer-events-none" style={{ color: '#64748b' }}>
+              Monaco loading in background...
+            </div>
+          )}
         </div>
 
         <div className="h-1 bg-border/50 flex-shrink-0" />

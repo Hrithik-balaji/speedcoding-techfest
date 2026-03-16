@@ -43,8 +43,8 @@ const IcoCheck = () => (
   </svg>
 );
 
-export default function MCQRound() {
-  const { mcqs, loadProblems, problemErrors, problemsLoading, setCurrentRound } = useExam();
+export default function MCQRound({ onPromote }) {
+  const { mcqs, loadProblems, problemErrors, problemsLoading } = useExam();
   const { student, setStudent } = useAuth();
 
   const [answers, setAnswers]       = useState({});
@@ -54,7 +54,6 @@ export default function MCQRound() {
   const [submitted, setSubmitted]   = useState(false);
   const [loading, setLoading]       = useState(false);
   const [checkingAnswers, setCheckingAnswers] = useState(false);
-  const [promotionCountdown, setPromotionCountdown] = useState(null);
   const [showEliminated, setShowEliminated] = useState(false);
 
   // Shuffle questions once per mount
@@ -69,17 +68,6 @@ export default function MCQRound() {
       if (student?.eliminated) setShowEliminated(true);
     }
   }, [student]);
-
-  useEffect(() => {
-    if (!Number.isInteger(promotionCountdown)) return;
-    if (promotionCountdown <= 0) {
-      setCurrentRound(2);
-      setPromotionCountdown(null);
-      return;
-    }
-    const t = setTimeout(() => setPromotionCountdown((v) => v - 1), 1000);
-    return () => clearTimeout(t);
-  }, [promotionCountdown, setCurrentRound]);
 
   // Mark current question as visited
   useEffect(() => {
@@ -123,12 +111,11 @@ export default function MCQRound() {
       if (data.promoted) {
         setStudent((prev) => ({
           ...prev,
-          currentRound: 2,
           eliminated: false,
           eliminatedReason: '',
           r1: { ...prev?.r1, submitted: true },
         }));
-        setPromotionCountdown(3);
+        onPromote?.(2);
       } else if (data.eliminated) {
         setStudent((prev) => ({
           ...prev,
@@ -193,20 +180,6 @@ export default function MCQRound() {
           <div className="text-5xl mb-4">🛑</div>
           <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#e2e8f0' }}>You did not qualify for Round 2</h1>
           <p className="text-sm" style={{ color: '#cbd5e1' }}>Thank you for participating in Speeding Coding!</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (Number.isInteger(promotionCountdown)) {
-    return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(9, 20, 12, 0.96)' }}>
-        <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#052e16', borderColor: 'rgba(34,197,94,0.45)' }}>
-          <div className="text-5xl mb-4">✅</div>
-          <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#bbf7d0' }}>You have advanced to Round 2!</h1>
-          <p className="text-lg font-semibold" style={{ color: '#dcfce7' }}>
-            Round 2 starts in {promotionCountdown}...
-          </p>
         </div>
       </div>
     );

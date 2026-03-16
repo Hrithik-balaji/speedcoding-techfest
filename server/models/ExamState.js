@@ -10,6 +10,16 @@ const ExamStateSchema = new mongoose.Schema({
     r3: { type: Number, default: 60 },
   },
 
+  // Explicit per-round durations (minutes)
+  round1Duration: { type: Number, default: 15 },
+  round2Duration: { type: Number, default: 20 },
+  round3Duration: { type: Number, default: 25 },
+
+  // Explicit per-round end timestamps
+  round1EndsAt: { type: Date, default: null },
+  round2EndsAt: { type: Date, default: null },
+  round3EndsAt: { type: Date, default: null },
+
   // Penalty settings (minutes per wrong attempt)
   penalties: {
     r2: { type: Number, default: 10 },

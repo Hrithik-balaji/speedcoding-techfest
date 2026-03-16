@@ -15,7 +15,7 @@ const CodingRound = lazy(() => import('../components/CodingRound'));
 const DebugRound  = lazy(() => import('../components/DebugRound'));
 
 export default function ExamPage() {
-  const { student, logout, refreshStudent } = useAuth();
+  const { student, logout, refreshStudent, setStudent } = useAuth();
   const {
     currentRound,
     setCurrentRound,
@@ -40,7 +40,16 @@ export default function ExamPage() {
   const [displayMs, setDisplayMs]     = useState(null);
   const [timerPaused, setTimerPaused] = useState(false);
   const [roundEnded, setRoundEnded]   = useState(false);
+  const [showPromotionOverlay, setShowPromotionOverlay] = useState(false);
+  const [promotionCountdown, setPromotionCountdown] = useState(null);
+  const [promotionTargetRound, setPromotionTargetRound] = useState(null);
+  const [contestCompleted, setContestCompleted] = useState(false);
   const remainingRef = useRef(null);
+  const fullscreenActive = useRef(false);
+  const isTransitioning = useRef(false);
+  const promotionTimeoutRef = useRef(null);
+  const promotionIntervalRef = useRef(null);
+  const fullscreenRetryRef = useRef(null);
 
   const formatMs = (ms) => {
     if (ms === null) return '--:--';
@@ -48,16 +57,50 @@ export default function ExamPage() {
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
   };
 
+  const clearPromotionTimers = () => {
+    if (promotionTimeoutRef.current) {
+      clearTimeout(promotionTimeoutRef.current);
+      promotionTimeoutRef.current = null;
+    }
+    if (promotionIntervalRef.current) {
+      clearInterval(promotionIntervalRef.current);
+      promotionIntervalRef.current = null;
+    }
+  };
+
+  const requestExamFullscreen = async () => {
+    if (document.fullscreenElement) {
+      fullscreenActive.current = true;
+      return;
+    }
+
+    try {
+      await document.documentElement.requestFullscreen();
+      fullscreenActive.current = true;
+    } catch (e) {
+      console.warn('Fullscreen failed:', e);
+    }
+  };
+
+  const exitExamFullscreen = async () => {
+    fullscreenActive.current = false;
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {}
+    }
+  };
+
   // Poll /api/timer every 10 s — drives the sticky bar
   useEffect(() => {
     if (!examStarted) return;
     const poll = async () => {
       try {
-        const { data } = await api.get('/timer');
-        const endTime  = data.roundEndTimes?.[`r${currentRound}`];
-        const force    = !!data.forceEnded?.[`r${currentRound}`];
+        const { data } = await api.get('/timer/status');
         const isPaused = !!data.paused;
-        const ms = force ? 0 : endTime ? Math.max(0, endTime - Date.now()) : null;
+        const ms = data.remainingMs === null || data.remainingMs === undefined
+          ? null
+          : Math.max(0, Number(data.remainingMs) || 0);
         setTimerPaused(isPaused);
         remainingRef.current = ms;
         setDisplayMs(ms);
@@ -95,14 +138,45 @@ export default function ExamPage() {
   const {
     isTerminated,
     violationCount,
-  } = useSecurity({ enabled: examReady && Number(currentRound || 0) >= 1 });
+  } = useSecurity({
+    enabled: examReady && Number(currentRound || 0) >= 1,
+    isTransitioning,
+  });
 
   useEffect(() => {
     if (!examReady || Number(currentRound || 0) < 1) return;
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
+    if (fullscreenActive.current) return;
+
+    requestExamFullscreen();
   }, [examReady, currentRound]);
+
+  useEffect(() => {
+    const handleFSChange = () => {
+      if (document.fullscreenElement) {
+        fullscreenActive.current = true;
+        return;
+      }
+
+      if (!fullscreenActive.current) return;
+
+      if (isTransitioning.current) {
+        if (fullscreenRetryRef.current) clearTimeout(fullscreenRetryRef.current);
+        fullscreenRetryRef.current = setTimeout(() => {
+          document.documentElement.requestFullscreen()
+            .then(() => {
+              fullscreenActive.current = true;
+            })
+            .catch(() => {});
+        }, 500);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFSChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFSChange);
+      if (fullscreenRetryRef.current) clearTimeout(fullscreenRetryRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!examStarted || showRules || !student || !profileConfirmed) {
@@ -148,18 +222,42 @@ export default function ExamPage() {
     setShowRules(false);
     resetExamState();
 
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
+    exitExamFullscreen();
   }, [isTerminated, resetExamState, setCurrentRound]);
+
+  useEffect(() => {
+    if (!student?.terminated && !student?.eliminated) return;
+    exitExamFullscreen();
+  }, [student?.terminated, student?.eliminated]);
+
+  useEffect(() => {
+    if (!contestCompleted) return;
+
+    const timer = setTimeout(() => {
+      exitExamFullscreen();
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [contestCompleted]);
+
+  useEffect(() => {
+    if (currentRound !== 1) return;
+    import('@monaco-editor/react').catch(() => {});
+  }, [currentRound]);
+
+  useEffect(() => {
+    return () => {
+      clearPromotionTimers();
+      if (fullscreenRetryRef.current) clearTimeout(fullscreenRetryRef.current);
+    };
+  }, []);
 
   const handleBeginExam = async () => {
     sessionStorage.removeItem('sc_terminated');
     setExamReady(false);
     setProfileConfirmed(false);
-    try {
-      await document.documentElement.requestFullscreen();
-    } catch {}
+    setContestCompleted(false);
+    await requestExamFullscreen();
     setShowRules(false);
     setExamStarted(true);
     try {
@@ -175,17 +273,43 @@ export default function ExamPage() {
     setCurrentRound(r);
   };
 
-  const handleRoundComplete = async (nextRound) => {
-    await loadProblems();
-    setCurrentRound(nextRound);
+  const handlePromotion = (nextRound) => {
+    clearPromotionTimers();
+    isTransitioning.current = true;
+    setPromotionTargetRound(nextRound);
+    setPromotionCountdown(3);
+    setShowPromotionOverlay(true);
+
+    promotionIntervalRef.current = setInterval(() => {
+      setPromotionCountdown((prev) => {
+        if (prev === null) return prev;
+        return prev > 0 ? prev - 1 : 0;
+      });
+    }, 1000);
+
+    promotionTimeoutRef.current = setTimeout(async () => {
+      clearPromotionTimers();
+      setStudent((prev) => (prev ? { ...prev, currentRound: nextRound } : prev));
+      setCurrentRound(nextRound);
+      setShowPromotionOverlay(false);
+      setPromotionCountdown(null);
+      setPromotionTargetRound(null);
+      isTransitioning.current = false;
+      await loadProblems();
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen()
+          .then(() => {
+            fullscreenActive.current = true;
+          })
+          .catch(() => {});
+      }
+    }, 3000);
   };
 
   const handleLogout = () => {
     sessionStorage.removeItem('sc_terminated');
     setProfileConfirmed(false);
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
+    exitExamFullscreen();
     logout();
     navigate('/', { replace: true });
   };
@@ -217,6 +341,19 @@ export default function ExamPage() {
 
       {/* Paused overlay */}
       {paused && examStarted && <PausedOverlay />}
+      {showPromotionOverlay && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(9, 20, 12, 0.96)' }}>
+          <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#052e16', borderColor: 'rgba(34,197,94,0.45)' }}>
+            <div className="text-5xl mb-4">✅</div>
+            <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#bbf7d0' }}>
+              You have advanced to Round {promotionTargetRound}!
+            </h1>
+            <p className="text-lg font-semibold" style={{ color: '#dcfce7' }}>
+              Round {promotionTargetRound} starts in {promotionCountdown ?? 3}...
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Navbar */}
       <Navbar
@@ -282,11 +419,11 @@ export default function ExamPage() {
             </div>
           </div>
         )}
-        {currentRound === 1 && <MCQRound />}
+        {currentRound === 1 && <MCQRound onPromote={() => handlePromotion(2)} />}
         {(currentRound === 2 || currentRound === 3) && (
           <Suspense fallback={<div className="h-full flex items-center justify-center text-muted">Loading editor...</div>}>
-            {currentRound === 2 && <DebugRound  onRoundComplete={() => handleRoundComplete(3)} />}
-            {currentRound === 3 && <CodingRound roundType="coding" />}
+            {currentRound === 2 && <DebugRound onRoundComplete={() => handlePromotion(3)} />}
+            {currentRound === 3 && <CodingRound roundType="coding" onContestComplete={() => setContestCompleted(true)} />}
           </Suspense>
         )}
       </div>

@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import api from '../utils/api';
 
-export function useSecurity({ enabled }) {
+export function useSecurity({ enabled, isTransitioning }) {
   const [isTerminated, setIsTerminated] = useState(false);
   const [violationCount, setViolationCount] = useState(0);
   const [securityActive, setSecurityActive] = useState(false);
@@ -22,6 +22,7 @@ export function useSecurity({ enabled }) {
 
   const reportViolation = useCallback(async (type, description) => {
     if (isTerminatedRef.current) return;
+    if (isTransitioning?.current) return;
     console.log('[Security] Reporting violation:', type);
     try {
       const { data } = await api.post('/students/me/violation', {
@@ -46,7 +47,7 @@ export function useSecurity({ enabled }) {
         detach();
       }
     }
-  }, [detach]);
+  }, [detach, isTransitioning]);
 
   useEffect(() => {
     if (isTerminatedRef.current) return;
@@ -105,9 +106,28 @@ export function useSecurity({ enabled }) {
 
     // Alt+Tab — only terminate if Alt was pressed before blur
     const onBlur = () => {
+      if (isTransitioning?.current) return;
       if (altPressed.current) {
         altPressed.current = false;
         reportViolation('alt_tab', 'Student used Alt+Tab to switch away');
+      }
+    };
+
+    let fullscreenGraceTimer = null;
+
+    const onFullscreenChange = () => {
+      if (fullscreenGraceTimer) {
+        clearTimeout(fullscreenGraceTimer);
+        fullscreenGraceTimer = null;
+      }
+
+      if (isTransitioning?.current) return;
+      if (!document.fullscreenElement && securityActivated.current) {
+        fullscreenGraceTimer = setTimeout(() => {
+          if (!document.fullscreenElement && !isTransitioning?.current) {
+            reportViolation('fullscreen_exit', 'Student exited fullscreen');
+          }
+        }, 1000);
       }
     };
 
@@ -127,6 +147,7 @@ export function useSecurity({ enabled }) {
       document.addEventListener('keydown', onKeyDown, opts);
       window.addEventListener('keyup', onKeyUp, opts);
       window.addEventListener('blur', onBlur, opts);
+      document.addEventListener('fullscreenchange', onFullscreenChange, opts);
       document.addEventListener('contextmenu', onContextMenu, opts);
       document.addEventListener('copy', onCopy, opts);
       document.addEventListener('cut', onCut, opts);
@@ -154,11 +175,13 @@ export function useSecurity({ enabled }) {
         document.removeEventListener('keydown', onKeyDown, opts);
         window.removeEventListener('keyup', onKeyUp, opts);
         window.removeEventListener('blur', onBlur, opts);
+        document.removeEventListener('fullscreenchange', onFullscreenChange, opts);
         document.removeEventListener('contextmenu', onContextMenu, opts);
         document.removeEventListener('copy', onCopy, opts);
         document.removeEventListener('cut', onCut, opts);
         document.removeEventListener('paste', onPaste, opts);
       }
+      if (fullscreenGraceTimer) clearTimeout(fullscreenGraceTimer);
       listenersAttached = false;
       if (isTerminatedRef.current || !enabled) {
         setSecurityActive(false);
@@ -171,7 +194,7 @@ export function useSecurity({ enabled }) {
       cleanup();
       detachRef.current = () => {};
     };
-  }, [enabled, reportViolation]);
+  }, [enabled, isTransitioning, reportViolation]);
 
   return { isTerminated, violationCount, securityActive };
 }

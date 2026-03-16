@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
-import Editor from '@monaco-editor/react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { useExam } from '../hooks/useExam';
 import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
@@ -25,6 +24,50 @@ const VERDICT_COLORS = {
   'Runtime Error': 'bg-accent/15 text-accent',
   'Compile Error': 'bg-[#7c7cff]/15 text-[#7c7cff]',
 };
+
+const MonacoEditor = lazy(() => import('@monaco-editor/react'));
+
+const EDITOR_OPTIONS = {
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  fontSize: 14,
+  fontFamily: "'JetBrains Mono', monospace",
+  wordWrap: 'on',
+  automaticLayout: true,
+  padding: { top: 12 },
+  renderLineHighlight: 'line',
+  quickSuggestions: false,
+  parameterHints: { enabled: false },
+  suggestOnTriggerCharacters: false,
+  acceptSuggestionOnEnter: 'off',
+  tabCompletion: 'off',
+  wordBasedSuggestions: false,
+  contextmenu: false,
+  tabSize: 4,
+  lineNumbers: 'on',
+};
+
+const EDITOR_LOADING_STYLE = {
+  height: '100%',
+  background: '#1e1e1e',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#888',
+  fontFamily: 'monospace',
+  borderRadius: '8px',
+};
+
+function configureMonaco(monaco) {
+  monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: true,
+  });
+  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: true,
+  });
+}
 
 function VerdictBadge({ verdict }) {
   return (
@@ -108,7 +151,7 @@ function HistoryPanel({ submissions }) {
 }
 
 export default function DebugRound({ onRoundComplete }) {
-  const { debugProblems, loadProblems, problemErrors, problemsLoading, setCurrentRound } = useExam();
+  const { debugProblems, loadProblems, problemErrors, problemsLoading } = useExam();
   const { student, setStudent } = useAuth();
 
   const [selectedId, setSelectedId] = useState(null);
@@ -120,8 +163,8 @@ export default function DebugRound({ onRoundComplete }) {
   const [isRunning, setIsRunning] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [solvedProgress, setSolvedProgress] = useState(Number(student?.debugSolvedCount || 0));
-  const [promotionCountdown, setPromotionCountdown] = useState(null);
   const [language, setLanguage] = useState('python');
+  const [editorReady, setEditorReady] = useState(false);
 
   const cooldownRef = useRef(null);
 
@@ -156,12 +199,6 @@ export default function DebugRound({ onRoundComplete }) {
   }, []);
 
   useEffect(() => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
-  }, []);
-
-  useEffect(() => {
     if (debugProblems.length === 0) loadProblems?.();
   }, [debugProblems.length, loadProblems]);
 
@@ -193,18 +230,6 @@ export default function DebugRound({ onRoundComplete }) {
       }));
     }
   }, [selectedProblem, allowedLanguages, language]);
-
-  useEffect(() => {
-    if (!Number.isInteger(promotionCountdown)) return;
-    if (promotionCountdown <= 0) {
-      setCurrentRound(3);
-      setPromotionCountdown(null);
-      onRoundComplete?.();
-      return;
-    }
-    const t = setTimeout(() => setPromotionCountdown((v) => v - 1), 1000);
-    return () => clearTimeout(t);
-  }, [promotionCountdown, setCurrentRound, onRoundComplete]);
 
   const loadSubmissions = async (pid) => {
     try {
@@ -250,12 +275,6 @@ export default function DebugRound({ onRoundComplete }) {
         ? selectedProblem.buggyCode
         : STARTER_CODE[nextLang],
     }));
-
-    // Some browsers may drop fullscreen when interacting with native selects.
-    // Re-request immediately from the same user gesture path.
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
   };
 
   const buttonDisabled = isRunning || cooldown > 0;
@@ -320,8 +339,8 @@ export default function DebugRound({ onRoundComplete }) {
       if (data.correct) {
         if (data.promoted) {
           setSolvedProgress(2);
-          setStudent((prev) => ({ ...prev, currentRound: 3, debugSolvedCount: 2 }));
-          setPromotionCountdown(3);
+          setStudent((prev) => ({ ...prev, debugSolvedCount: 2 }));
+          onRoundComplete?.(3);
         } else {
           setSolvedProgress(Number(data.solvedCount || solvedProgress));
           setStudent((prev) => ({ ...prev, debugSolvedCount: Number(data.solvedCount || prev?.debugSolvedCount || 0) }));
@@ -404,24 +423,46 @@ export default function DebugRound({ onRoundComplete }) {
           <span className="text-xs text-muted truncate max-w-[240px]">{selectedProblem?.title || ''}</span>
         </div>
 
-        <div className="flex-[0_0_55%] min-h-[120px]" onContextMenu={(e) => e.preventDefault()}>
-          <Editor
-            height="100%"
-            language={language === 'cpp' ? 'cpp' : language}
-            value={getActiveCode()}
-            onChange={onEditorChange}
-            theme="vs-dark"
-            options={{
-              fontSize: 14,
-              fontFamily: "'JetBrains Mono', monospace",
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              tabSize: 4,
-              lineNumbers: 'on',
-              contextmenu: false,
-            }}
-          />
+        <div className="flex-[0_0_55%] min-h-[120px] relative" onContextMenu={(e) => e.preventDefault()}>
+          {!editorReady && (
+            <textarea
+              value={getActiveCode()}
+              onChange={(e) => onEditorChange(e.target.value)}
+              style={{
+                width: '100%',
+                height: '100%',
+                background: '#1e1e1e',
+                color: '#d4d4d4',
+                fontFamily: 'monospace',
+                fontSize: '14px',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '8px',
+                resize: 'none',
+              }}
+              placeholder="Editor loading..."
+            />
+          )}
+          <div style={{ display: editorReady ? 'block' : 'none', height: '100%' }}>
+            <Suspense fallback={<div style={EDITOR_LOADING_STYLE}>Loading editor...</div>}>
+              <MonacoEditor
+                height="100%"
+                language={language === 'cpp' ? 'cpp' : language}
+                value={getActiveCode()}
+                onChange={onEditorChange}
+                loading="Loading editor..."
+                theme="vs-dark"
+                beforeMount={configureMonaco}
+                onMount={() => setEditorReady(true)}
+                options={EDITOR_OPTIONS}
+              />
+            </Suspense>
+          </div>
+          {!editorReady && (
+            <div className="absolute right-3 bottom-3 text-xs pointer-events-none" style={{ color: '#64748b' }}>
+              Monaco loading in background...
+            </div>
+          )}
         </div>
 
         <div className="h-1 bg-border/50 flex-shrink-0" />
@@ -459,16 +500,6 @@ export default function DebugRound({ onRoundComplete }) {
           </div>
         </div>
       </div>
-
-      {Number.isInteger(promotionCountdown) && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center px-6" style={{ background: 'rgba(9, 20, 12, 0.96)' }}>
-          <div className="w-full max-w-xl rounded-2xl border p-8 text-center" style={{ background: '#052e16', borderColor: 'rgba(34,197,94,0.45)' }}>
-            <div className="text-5xl mb-4">✅</div>
-            <h1 className="text-3xl font-extrabold mb-3" style={{ color: '#bbf7d0' }}>You have advanced to Round 3!</h1>
-            <p className="text-lg font-semibold" style={{ color: '#dcfce7' }}>Round 3 starts in {promotionCountdown}...</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

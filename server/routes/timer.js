@@ -1,8 +1,9 @@
 const router = require('express').Router();
-const { protect, adminProtect } = require('../middleware/auth');
+const { adminProtect } = require('../middleware/auth');
 const ExamState = require('../models/ExamState');
-const Student = require('../models/Student');
 const { resetStudentsForRound } = require('./students');
+
+const autoEndTimers = new Map();
 
 async function getState() {
   let state = await ExamState.findById('global');
@@ -10,318 +11,368 @@ async function getState() {
   return state;
 }
 
-function getCurrentRoundDurationMs(state) {
-  const round = Number(state.currentRound || 0);
-  if (![1, 2, 3].includes(round)) return 0;
-  const minutes = Number(state?.timers?.[`r${round}`] || 0);
-  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
-  return minutes * 60 * 1000;
+function durationField(round) {
+  return `round${round}Duration`;
 }
 
-function toEpochMs(value) {
-  if (!value) return null;
-  const dt = new Date(value);
-  const ms = dt.getTime();
-  return Number.isFinite(ms) ? ms : null;
+function endsAtField(round) {
+  return `round${round}EndsAt`;
 }
 
-// GET /api/timer — get current timer state (students poll this)
-router.get('/', protect, async (req, res) => {
-  const state = await getState();
+function roundKey(round) {
+  return `r${round}`;
+}
 
-  // Auto-eliminate round 2 students when timer is over and threshold is unmet.
-  try {
-    const student = await Student.findById(req.student._id).select('currentRound debugSolvedCount eliminated eliminatedReason');
-    const r2End = Number(state?.roundEndTimes?.r2 || 0);
-    const r2Over = (state?.forceEnded?.r2 === true) || (r2End > 0 && Date.now() >= r2End);
-    if (
-      student &&
-      Number(student.currentRound || 0) === 2 &&
-      !student.eliminated &&
-      r2Over &&
-      Number(student.debugSolvedCount || 0) < 2
-    ) {
-      student.eliminated = true;
-      student.eliminatedReason = 'Did not pass Round 2';
-      await student.save();
-    }
-  } catch (err) {
-    console.error('Timer elimination check failed:', err.message);
+function clearAutoEndTimer(round) {
+  const existing = autoEndTimers.get(round);
+  if (existing) {
+    clearTimeout(existing);
+    autoEndTimers.delete(round);
   }
+}
 
-  res.json({
-    timers:        state.timers,
-    penalties:     state.penalties,
-    paused:        state.paused,
-    roundEndTimes: state.roundEndTimes,
-    forceEnded:    state.forceEnded,
-  });
+function setRoundEndTime(state, round, endsAt) {
+  state[endsAtField(round)] = endsAt;
+  state.roundEndTimes = {
+    ...(state.roundEndTimes || {}),
+    [roundKey(round)]: endsAt ? endsAt.getTime() : null,
+  };
+  state.markModified('roundEndTimes');
+}
+
+function setForceEnded(state, round, value) {
+  state.forceEnded = {
+    ...(state.forceEnded || {}),
+    [roundKey(round)]: value,
+  };
+  state.markModified('forceEnded');
+}
+
+function hasRoundStarted(state, round) {
+  const key = roundKey(round);
+  return Boolean(
+    state?.roundHistory?.some((entry) => entry.round === round && (entry.startedAt || entry.restartedAt)) ||
+    state?.roundEndTimes?.[key] ||
+    state?.[endsAtField(round)]
+  );
+}
+
+function currentRoundEndsAt(state) {
+  const round = Number(state?.currentRound || 0);
+  if (![1, 2, 3].includes(round)) return null;
+  return state?.[endsAtField(round)] || null;
+}
+
+function computeRemainingMs(state) {
+  const endsAt = currentRoundEndsAt(state);
+  if (!endsAt) return null;
+  const now = state?.paused && state?.pausedAt
+    ? new Date(state.pausedAt).getTime()
+    : Date.now();
+  return Math.max(0, new Date(endsAt).getTime() - now);
+}
+
+function buildTimerStatus(state) {
+  return {
+    contestStarted: Boolean(state?.contestStarted),
+    currentRound: Number(state?.currentRound || 0),
+    roundActive: Boolean(state?.roundActive),
+    paused: Boolean(state?.paused),
+    round1Duration: Number(state?.round1Duration || 15),
+    round2Duration: Number(state?.round2Duration || 20),
+    round3Duration: Number(state?.round3Duration || 25),
+    currentRoundEndsAt: currentRoundEndsAt(state),
+    remainingMs: computeRemainingMs(state),
+    roundHistory: state?.roundHistory || [],
+    hasRoundStarted: {
+      r1: hasRoundStarted(state, 1),
+      r2: hasRoundStarted(state, 2),
+      r3: hasRoundStarted(state, 3),
+    },
+    roundEndTimes: state?.roundEndTimes || {},
+    forceEnded: state?.forceEnded || {},
+  };
+}
+
+async function scheduleAutoEnd(round, msRemaining) {
+  clearAutoEndTimer(round);
+  autoEndTimers.set(round, setTimeout(async () => {
+    try {
+      const state = await getState();
+      if (state.roundActive && Number(state.currentRound) === round) {
+        state.roundActive = false;
+        state.paused = false;
+        state.pausedAt = null;
+        state.roundEndedAt = new Date();
+        await state.save();
+        console.log(`Round ${round} auto-ended by timer`);
+      }
+    } catch (err) {
+      console.error(`Failed to auto-end round ${round}:`, err.message);
+    } finally {
+      clearAutoEndTimer(round);
+    }
+  }, msRemaining));
+}
+
+router.get('/', async (_req, res) => {
+  try {
+    const state = await getState();
+    res.json({
+      ...state.toObject(),
+      ...buildTimerStatus(state),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// PATCH /api/timer/set — admin sets round duration
-router.patch('/set', adminProtect, async (req, res) => {
+router.get('/status', async (_req, res) => {
   try {
-    const { round, minutes } = req.body;
-    const r = Number(round);
-    const m = Number(minutes);
-    if (![1, 2, 3].includes(r)) return res.status(400).json({ error: 'round must be 1, 2, or 3' });
-    if (!Number.isFinite(m) || m <= 0 || m > 999) return res.status(400).json({ error: 'minutes must be between 1 and 999' });
     const state = await getState();
-    state.timers[`r${r}`] = m;
-    state.roundEndTimes[`r${r}`] = Date.now() + m * 60 * 1000;
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/set-duration', adminProtect, async (req, res) => {
+  try {
+    const round = Number(req.body?.round);
+    const minutes = Number(req.body?.minutes);
+    if (![1, 2, 3].includes(round)) {
+      return res.status(400).json({ error: 'Round must be 1, 2, or 3' });
+    }
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 180) {
+      return res.status(400).json({ error: 'Minutes must be between 1 and 180' });
+    }
+
+    const state = await getState();
+    if (state.roundActive && Number(state.currentRound) === round) {
+      return res.status(400).json({ error: 'Cannot change duration of active round' });
+    }
+
+    state[durationField(round)] = minutes;
     await state.save();
-    res.json(state.timers);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// POST /api/timer/start-round — admin starts a round (sets absolute end time)
-router.post('/start-round', adminProtect, async (req, res) => {
+router.post('/start-round', adminProtect, async (_req, res) => {
   try {
-    const requestedRound = Number(req.body?.round);
     const state = await getState();
+    let round = Number(state.currentRound || 0);
 
-    const r = [1, 2, 3].includes(requestedRound)
-      ? requestedRound
-      : (state.currentRound > 0 ? state.currentRound : 1);
+    if (state.roundActive) {
+      return res.status(400).json({ error: 'Round is already active' });
+    }
 
-    const dur = state.timers[`r${r}`] || [20, 30, 60][r - 1];
-    const now = new Date();
+    if (round < 1) {
+      round = 1;
+      state.currentRound = 1;
+    }
+    if (round > 3) {
+      return res.status(400).json({ error: 'All rounds are already complete' });
+    }
 
-    state.currentRound = r;
+    const duration = Number(state[durationField(round)] || 0);
+    const startedAt = new Date();
+    const endsAt = new Date(Date.now() + duration * 60 * 1000);
+
+    state.contestStarted = true;
+    if (!state.contestStartTime) state.contestStartTime = Date.now();
     state.roundActive = true;
-    state.contestStarted = true;
-    if (!state.contestStartTime && r === 1) {
-      state.contestStartTime = now.getTime();
-    }
-    state.roundStartedAt = now;
-    state.roundEndedAt = null;
-
-    state.roundEndTimes[`r${r}`] = now.getTime() + dur * 60 * 1000;
-    state.forceEnded[`r${r}`] = false;
-
-    await state.save();
-
-    const remainingMs = Math.max(0, getCurrentRoundDurationMs(state));
-    res.json({
-      currentRound: state.currentRound,
-      roundActive: state.roundActive,
-      contestStarted: state.contestStarted,
-      roundStartedAt: state.roundStartedAt,
-      roundEndedAt: state.roundEndedAt,
-      remainingMs,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/timer/stop-round — admin stops current round
-router.post('/stop-round', adminProtect, async (req, res) => {
-  try {
-    const state = await getState();
-    const now = new Date();
-    const r = Number(state.currentRound || 0);
-
-    state.roundActive = false;
-    state.roundEndedAt = now;
-
-    if ([1, 2, 3].includes(r)) {
-      state.roundEndTimes[`r${r}`] = now.getTime();
-      state.forceEnded[`r${r}`] = true;
-      state.roundHistory = state.roundHistory || [];
-      state.roundHistory.push({
-        round: r,
-        startedAt: state.roundStartedAt || null,
-        endedAt: now,
-        restartedAt: null,
-      });
-    }
-
-    await state.save();
-    res.json({
-      currentRound: state.currentRound,
-      roundActive: state.roundActive,
-      contestStarted: state.contestStarted,
-      roundEndedAt: state.roundEndedAt,
-      remainingMs: 0,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/timer/restart-round — admin restarts a completed/stopped round
-router.post('/restart-round', adminProtect, async (req, res) => {
-  try {
-    const r = Number(req.body?.round);
-    if (![1, 2, 3].includes(r)) {
-      return res.status(400).json({ error: 'round must be 1, 2, or 3' });
-    }
-
-    const state = await getState();
-    const now = new Date();
-    const dur = Number(state.timers?.[`r${r}`] || [20, 30, 60][r - 1]);
-
-    state.currentRound = r;
-    state.roundActive = true;
-    state.contestStarted = true;
-    state.roundStartedAt = now;
-    state.roundEndedAt = null;
-    state.roundEndTimes[`r${r}`] = now.getTime() + dur * 60 * 1000;
-    state.forceEnded[`r${r}`] = false;
-    state.roundHistory = state.roundHistory || [];
-    state.roundHistory.push({
-      round: r,
-      startedAt: null,
-      endedAt: null,
-      restartedAt: now,
-    });
-
-    await state.save();
-    await resetStudentsForRound(r);
-
-    res.json({
-      success: true,
-      currentRound: state.currentRound,
-      roundActive: state.roundActive,
-      roundStartedAt: state.roundStartedAt,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/timer/next-round — admin moves to next round
-router.post('/next-round', adminProtect, async (req, res) => {
-  try {
-    const state = await getState();
-    const next = Math.min(3, Number(state.currentRound || 0) + 1);
-
-    state.currentRound = next;
-    state.roundActive = false;
-    state.contestStarted = true;
-    state.roundStartedAt = null;
-    state.roundEndedAt = null;
-
-    await state.save();
-    res.json({
-      currentRound: state.currentRound,
-      roundActive: state.roundActive,
-      contestStarted: state.contestStarted,
-      remainingMs: 0,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// GET /api/timer/status — admin/student round control status
-router.get('/status', adminProtect, async (req, res) => {
-  try {
-    const state = await getState();
-    let remainingMs = 0;
-
-    if (state.roundActive && state.roundStartedAt) {
-      const elapsed = Date.now() - toEpochMs(state.roundStartedAt);
-      remainingMs = Math.max(0, getCurrentRoundDurationMs(state) - elapsed);
-    }
-
-    const roundHistory = (state.roundHistory || []).map((h) => ({
-      round: h.round,
-      startedAt: h.startedAt,
-      endedAt: h.endedAt,
-      restartedAt: h.restartedAt,
-    }));
-
-    const hasRoundStarted = {
-      r1: Boolean(state.roundEndTimes?.r1) || roundHistory.some((h) => Number(h.round) === 1),
-      r2: Boolean(state.roundEndTimes?.r2) || roundHistory.some((h) => Number(h.round) === 2),
-      r3: Boolean(state.roundEndTimes?.r3) || roundHistory.some((h) => Number(h.round) === 3),
-    };
-
-    res.json({
-      currentRound: Number(state.currentRound || 0),
-      roundActive: Boolean(state.roundActive),
-      contestStarted: Boolean(state.contestStarted),
-      remainingMs,
-      roundHistory,
-      hasRoundStarted,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// PATCH /api/timer/pause — admin pause/resume
-router.patch('/pause', adminProtect, async (req, res) => {
-  try {
-    const state = await getState();
-    if (!state.paused) {
-      state.paused   = true;
-      state.pausedAt = new Date();
-    } else {
-      // Extend end times by paused duration
-      const delta = Date.now() - new Date(state.pausedAt).getTime();
-      ['r1', 'r2', 'r3'].forEach(r => {
-        if (state.roundEndTimes[r]) state.roundEndTimes[r] += delta;
-      });
-      state.paused   = false;
-      state.pausedAt = null;
-    }
-    await state.save();
-    res.json({ paused: state.paused });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/timer/force-end — force end a round
-router.post('/force-end', adminProtect, async (req, res) => {
-  try {
-    const { round } = req.body;
-    const r = Number(round);
-    if (![1, 2, 3].includes(r)) return res.status(400).json({ error: 'round must be 1, 2, or 3' });
-    const state = await getState();
-    state.roundEndTimes[`r${r}`] = Date.now();
-    state.forceEnded[`r${r}`]   = true;
-    await state.save();
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// PATCH /api/timer/penalties — update penalties
-router.patch('/penalties', adminProtect, async (req, res) => {
-  try {
-    const { r2, r3 } = req.body;
-    const state = await getState();
-    if (r2 !== undefined) {
-      const v = Number(r2);
-      if (!Number.isFinite(v) || v < 0 || v > 999) return res.status(400).json({ error: 'r2 penalty must be 0–999 minutes' });
-      state.penalties.r2 = v;
-    }
-    if (r3 !== undefined) {
-      const v = Number(r3);
-      if (!Number.isFinite(v) || v < 0 || v > 999) return res.status(400).json({ error: 'r3 penalty must be 0–999 minutes' });
-      state.penalties.r3 = v;
-    }
-    await state.save();
-    res.json(state.penalties);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/timer/reset — reset contest timing to waiting state
-router.post('/reset', adminProtect, async (req, res) => {
-  try {
-    const state = await getState();
     state.paused = false;
     state.pausedAt = null;
+    state.roundStartedAt = startedAt;
+    state.roundEndedAt = null;
+    setRoundEndTime(state, round, endsAt);
+    setForceEnded(state, round, false);
+    state.roundHistory.push({ round, startedAt, endedAt: null, restartedAt: null });
+    await state.save();
+
+    await scheduleAutoEnd(round, duration * 60 * 1000);
+
+    res.json({ currentRound: round, roundActive: true, endsAt, duration });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/stop-round', adminProtect, async (_req, res) => {
+  try {
+    const state = await getState();
+    const round = Number(state.currentRound || 0);
+    if (![1, 2, 3].includes(round) || !state.roundActive) {
+      return res.status(400).json({ error: 'No active round to stop' });
+    }
+
+    clearAutoEndTimer(round);
+    const endedAt = new Date();
+    state.roundActive = false;
+    state.paused = false;
+    state.pausedAt = null;
+    state.roundEndedAt = endedAt;
+    setRoundEndTime(state, round, endedAt);
+    await state.save();
+
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/next-round', adminProtect, async (_req, res) => {
+  try {
+    const state = await getState();
+    const currentRound = Number(state.currentRound || 0);
+    if (currentRound >= 3) {
+      return res.status(400).json({ error: 'Already on the final round' });
+    }
+
+    if ([1, 2, 3].includes(currentRound)) clearAutoEndTimer(currentRound);
+
+    state.roundActive = false;
+    state.paused = false;
+    state.pausedAt = null;
+    state.roundEndedAt = currentRound > 0 ? new Date() : null;
+    state.currentRound = Math.max(1, currentRound + 1);
+    state.roundStartedAt = null;
+    await state.save();
+
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/restart-round', adminProtect, async (req, res) => {
+  try {
+    const round = Number(req.body?.round);
+    if (![1, 2, 3].includes(round)) {
+      return res.status(400).json({ error: 'Round must be 1, 2, or 3' });
+    }
+
+    const state = await getState();
+    clearAutoEndTimer(Number(state.currentRound || 0));
+    clearAutoEndTimer(round);
+
+    await resetStudentsForRound(round);
+
+    state.contestStarted = true;
+    if (!state.contestStartTime) state.contestStartTime = Date.now();
+    state.currentRound = round;
+    state.roundActive = false;
+    state.paused = false;
+    state.pausedAt = null;
+    state.roundStartedAt = null;
+    state.roundEndedAt = null;
+    setRoundEndTime(state, round, null);
+    setForceEnded(state, round, false);
+    state.roundHistory.push({ round, startedAt: null, endedAt: null, restartedAt: new Date() });
+    await state.save();
+
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/pause', adminProtect, async (_req, res) => {
+  try {
+    const state = await getState();
+    const round = Number(state.currentRound || 0);
+    if (![1, 2, 3].includes(round) || !state.roundActive) {
+      return res.status(400).json({ error: 'No active round to pause' });
+    }
+
+    if (!state.paused) {
+      state.paused = true;
+      state.pausedAt = new Date();
+      clearAutoEndTimer(round);
+      await state.save();
+      return res.json(buildTimerStatus(state));
+    }
+
+    const pausedDuration = state.pausedAt
+      ? Date.now() - new Date(state.pausedAt).getTime()
+      : 0;
+    const existingEndsAt = state[endsAtField(round)]
+      ? new Date(state[endsAtField(round)]).getTime()
+      : Date.now();
+    const shiftedEndsAt = new Date(existingEndsAt + pausedDuration);
+
+    state.paused = false;
+    state.pausedAt = null;
+    setRoundEndTime(state, round, shiftedEndsAt);
+    await state.save();
+
+    await scheduleAutoEnd(round, Math.max(0, shiftedEndsAt.getTime() - Date.now()));
+    return res.json(buildTimerStatus(state));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/force-end', adminProtect, async (req, res) => {
+  try {
+    const round = Number(req.body?.round);
+    if (![1, 2, 3].includes(round)) {
+      return res.status(400).json({ error: 'Round must be 1, 2, or 3' });
+    }
+
+    const state = await getState();
+    clearAutoEndTimer(round);
+    const endedAt = new Date();
+    setRoundEndTime(state, round, endedAt);
+    setForceEnded(state, round, true);
+
+    if (Number(state.currentRound || 0) === round) {
+      state.roundActive = false;
+      state.paused = false;
+      state.pausedAt = null;
+      state.roundEndedAt = endedAt;
+    }
+
+    await state.save();
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/reset', adminProtect, async (_req, res) => {
+  try {
+    clearAutoEndTimer(1);
+    clearAutoEndTimer(2);
+    clearAutoEndTimer(3);
+
+    const state = await getState();
     state.contestStarted = false;
     state.contestStartTime = null;
     state.currentRound = 0;
     state.roundActive = false;
+    state.paused = false;
+    state.pausedAt = null;
     state.roundStartedAt = null;
     state.roundEndedAt = null;
     state.roundHistory = [];
-    state.roundEndTimes = { r1: null, r2: null, r3: null };
-    state.forceEnded = { r1: false, r2: false, r3: false };
-    state.timers = { r1: 20, r2: 30, r3: 60 };
+    setRoundEndTime(state, 1, null);
+    setRoundEndTime(state, 2, null);
+    setRoundEndTime(state, 3, null);
+    setForceEnded(state, 1, false);
+    setForceEnded(state, 2, false);
+    setForceEnded(state, 3, false);
     await state.save();
+
     await resetStudentsForRound(1);
-    res.json({
-      paused: state.paused,
-      roundEndTimes: state.roundEndTimes,
-      forceEnded: state.forceEnded,
-      timers: state.timers,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+
+    res.json(buildTimerStatus(state));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

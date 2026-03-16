@@ -184,6 +184,8 @@ export default function AdminPage() {
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [roundActionLoading, setRoundActionLoading] = useState('');
+  const [durationDrafts, setDurationDrafts] = useState({ 1: '15', 2: '20', 3: '25' });
+  const [durationSavingRound, setDurationSavingRound] = useState(null);
   const [restartRoundLoading, setRestartRoundLoading] = useState(null);
   const [restartConfirmRound, setRestartConfirmRound] = useState(null);
   const [showRoundHistory, setShowRoundHistory] = useState(false);
@@ -414,6 +416,15 @@ export default function AdminPage() {
 
   const POLL_INTERVAL = 30000; // 30 seconds
 
+  useEffect(() => {
+    if (!timerStatus) return;
+    setDurationDrafts({
+      1: String(timerStatus.round1Duration ?? 15),
+      2: String(timerStatus.round2Duration ?? 20),
+      3: String(timerStatus.round3Duration ?? 25),
+    });
+  }, [timerStatus?.round1Duration, timerStatus?.round2Duration, timerStatus?.round3Duration]);
+
   // Single unified polling loop — replaces all previous setInterval calls
   useEffect(() => {
     if (!isAdmin) return;
@@ -593,6 +604,26 @@ export default function AdminPage() {
   const startRound = () => runRoundAction('start', () => api.post('/timer/start-round'), 'Round started');
   const startContest = startRound;
   const stopRound = () => runRoundAction('stop', () => api.post('/timer/stop-round'), 'Round stopped');
+  const setRoundDuration = async (round) => {
+    const minutes = Number(durationDrafts[round]);
+    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 180) {
+      toast.error('Duration must be between 5 and 180 minutes');
+      return;
+    }
+
+    setDurationSavingRound(round);
+    try {
+      const { data } = await api.patch('/timer/set-duration', { round, minutes });
+      setTimerStatus(data);
+      await fetchContestState();
+      toast.success(`Round ${round} duration set to ${minutes} minutes`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update duration');
+    } finally {
+      setDurationSavingRound(null);
+    }
+  };
+
   const nextRound = () => {
     const ok = window.confirm('Move to next round? This cannot be undone.');
     if (!ok) return;
@@ -744,6 +775,41 @@ export default function AdminPage() {
           <p className="text-sm mb-4" style={{ color: COLORS.muted }}>
             {roundStatusLabel(timerStatus)}
           </p>
+          <div className="space-y-3 mb-4">
+            {[1, 2, 3].map((round) => {
+              const isActiveRound = Number(timerStatus?.currentRound || 0) === round && Boolean(timerStatus?.roundActive);
+              const isSaving = durationSavingRound === round;
+
+              return (
+                <div key={round} className="flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3" style={{ borderColor: COLORS.border, background: '#0f172a' }}>
+                  <span className="text-sm font-semibold min-w-[72px]" style={{ color: COLORS.text }}>Round {round}</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={180}
+                    value={durationDrafts[round] ?? ''}
+                    onChange={(e) => setDurationDrafts((prev) => ({ ...prev, [round]: e.target.value }))}
+                    className="w-28 rounded-lg border px-3 py-2 text-sm outline-none"
+                    style={{ background: COLORS.card, borderColor: COLORS.border, color: COLORS.text }}
+                    disabled={isSaving || isActiveRound}
+                  />
+                  <span className="text-sm" style={{ color: COLORS.muted }}>minutes</span>
+                  <button
+                    onClick={() => setRoundDuration(round)}
+                    disabled={isSaving || isActiveRound}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ background: 'rgba(34,197,94,0.16)', color: '#bbf7d0', border: '1px solid rgba(34,197,94,0.35)' }}
+                  >
+                    <Icon name={isSaving ? 'refresh' : 'settings'} className={`w-4 h-4 ${isSaving ? 'animate-spin' : ''}`} />
+                    {isSaving ? 'Saving...' : 'Set Duration'}
+                  </button>
+                  {isActiveRound && (
+                    <span className="text-xs font-semibold" style={{ color: '#fbbf24' }}>Active - cannot change</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={startRound}
