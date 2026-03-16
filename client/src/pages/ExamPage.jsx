@@ -10,6 +10,7 @@ import TerminatedOverlay from '../components/TerminatedOverlay';
 import EliminatedOverlay from '../components/EliminatedOverlay';
 import MCQRound      from '../components/MCQRound';
 import api, { BASE_URL } from '../utils/api';
+import Footer from '../components/Footer';
 
 const CodingRound = lazy(() => import('../components/CodingRound'));
 const DebugRound  = lazy(() => import('../components/DebugRound'));
@@ -505,9 +506,12 @@ export default function ExamPage() {
       {/* Sticky timer bar — only shown once exam begins */}
       {examStarted && examReady && Number(currentRound || 0) >= 1 && (
         <div
-          className="flex items-center justify-center gap-3 py-1.5 flex-shrink-0 z-40"
+          className="flex items-center justify-center gap-3 py-1.5 flex-shrink-0"
           style={{
-            background:   roundEnded ? '#1a0808' : displayMs !== null && displayMs < 300000 ? '#160f00' : '#080e1c',
+            position: 'sticky',
+            top: 0,
+            zIndex: 9999,
+            background: roundEnded ? '#1a0808' : displayMs !== null && displayMs < 300000 ? '#160f00' : '#080e1c',
             borderBottom: `1px solid ${roundEnded ? 'rgba(127,29,29,0.7)' : displayMs !== null && displayMs < 300000 ? 'rgba(120,53,15,0.7)' : '#1e2d45'}`,
           }}
         >
@@ -542,7 +546,7 @@ export default function ExamPage() {
       )}
 
       {/* Main content */}
-      <div className={`flex-1 overflow-hidden relative${roundEnded && examStarted ? ' pointer-events-none select-none' : ''}`}>
+      <div className={`flex-1 overflow-x-hidden overflow-y-auto relative${roundEnded && examStarted ? ' pointer-events-none select-none' : ''}` }>
         {roundEnded && examStarted && (
           <div className="absolute inset-0 z-30 flex items-start justify-center pt-16" style={{ background: 'rgba(0,0,0,0.35)' }}>
             <div
@@ -558,11 +562,27 @@ export default function ExamPage() {
         {currentRound === 1 && <MCQRound onPromote={() => handlePromotion(2)} />}
         {(currentRound === 2 || currentRound === 3) && (
           <Suspense fallback={<div className="h-full flex items-center justify-center text-muted">Loading editor...</div>}>
-            {currentRound === 2 && <DebugRound onRoundComplete={() => handlePromotion(3)} />}
-            {currentRound === 3 && <CodingRound roundType="coding" onContestComplete={() => setContestCompleted(true)} />}
+            {currentRound === 2 && (
+              <DebugRound
+                onRoundComplete={() => handlePromotion(3)}
+                timerDisplay={formatMs(displayMs)}
+                timerWarning={displayMs !== null && displayMs < 300000}
+                roundEnded={roundEnded}
+              />
+            )}
+            {currentRound === 3 && (
+              <CodingRound
+                roundType="coding"
+                onContestComplete={() => setContestCompleted(true)}
+                timerDisplay={formatMs(displayMs)}
+                timerWarning={displayMs !== null && displayMs < 300000}
+                roundEnded={roundEnded}
+              />
+            )}
           </Suspense>
         )}
       </div>
+      <Footer />
     </div>
   );
 }

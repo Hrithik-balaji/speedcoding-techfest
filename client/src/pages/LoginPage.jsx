@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
+import Footer from '../components/Footer';
 
 // ── Inline SVG icon components ────────────────────────────────
 const IcoUser = () => (
@@ -506,6 +507,7 @@ export default function LoginPage() {
         </div>
 
       </div>
+      <Footer />
     </div>
   );
 }

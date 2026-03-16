@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 import QuestionModal from '../components/admin/QuestionModal';
+import Footer from '../components/Footer';
 
 const COLORS = {
   bg: '#0B1120',
@@ -1816,6 +1817,7 @@ export default function AdminPage() {
           </div>
         </div>
       )}
+      <Footer />
     </div>
   );
 }

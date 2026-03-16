@@ -72,7 +72,7 @@ function VerdictBadge({ verdict }) {
   return <span className={`verdict-badge ${colors[verdict] || 'bg-border text-muted'}`}>{verdict}</span>;
 }
 
-export default function CodingRound({ roundType, onContestComplete }) {
+export default function CodingRound({ roundType, onContestComplete, timerDisplay, timerWarning, roundEnded }) {
   const { codingProblems, loadProblems, problemErrors, problemsLoading } = useExam();
   const { student } = useAuth();
 
@@ -306,6 +306,25 @@ export default function CodingRound({ roundType, onContestComplete }) {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
+        {timerDisplay && (
+          <div style={{
+            padding: '6px 12px',
+            background: timerWarning ? '#160f00' : '#080e1c',
+            borderBottom: '1px solid #1e2d45',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexShrink: 0,
+          }}>
+            <span style={{ fontFamily: 'monospace', fontWeight: 'bold', fontSize: '14px', color: timerWarning ? '#ef4444' : '#94a3b8' }}>
+              {timerDisplay}
+            </span>
+            <span style={{ fontSize: '11px', color: '#475569' }}>remaining</span>
+            {roundEnded && (
+              <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 'bold' }}>🔒 Round ended</span>
+            )}
+          </div>
+        )}
         <div className="flex items-center justify-between px-3 py-2 flex-shrink-0" style={{ background: '#0d1424', borderBottom: '1px solid #1e2d45' }}>
           <span className="text-xs text-muted truncate max-w-[220px]">{selectedProblem?.title || ''}</span>
           <select value={language} onChange={handleLanguageChange} className="bg-bg border border-border rounded px-2 py-1 text-sm text-text outline-none focus:border-accent">

@@ -150,7 +150,7 @@ function HistoryPanel({ submissions }) {
   );
 }
 
-export default function DebugRound({ onRoundComplete }) {
+export default function DebugRound({ onRoundComplete, timerDisplay, timerWarning, roundEnded }) {
   const { debugProblems, loadProblems, problemErrors, problemsLoading } = useExam();
   const { student, setStudent } = useAuth();
 
@@ -261,19 +261,23 @@ export default function DebugRound({ onRoundComplete }) {
     }
 
     const currentCode = editorCodes[selectedId] ?? STARTER_CODE[language];
+    const isBuggyCode = currentCode === selectedProblem?.buggyCode;
     const isStarterCode = Object.values(STARTER_CODE).includes(currentCode);
+    const isUnmodified = isBuggyCode || isStarterCode;
 
-    if (!isStarterCode) {
-      const ok = window.confirm('Switching language will clear your code. Continue?');
+    if (!isUnmodified) {
+      const ok = window.confirm(
+        'Switching language will reset to the original buggy code. Your changes will be lost. Continue?'
+      );
       if (!ok) return;
     }
 
     setLanguage(nextLang);
     setEditorCodes((prev) => ({
       ...prev,
-      [selectedId]: selectedProblem?.buggyCode && nextLang === 'python'
-        ? selectedProblem.buggyCode
-        : STARTER_CODE[nextLang],
+      [selectedId]: selectedProblem?.buggyCode
+        || prev[selectedId]
+        || STARTER_CODE[nextLang],
     }));
   };
 
@@ -404,6 +408,25 @@ export default function DebugRound({ onRoundComplete }) {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
+        {timerDisplay && (
+          <div style={{
+            padding: '6px 12px',
+            background: timerWarning ? '#160f00' : '#080e1c',
+            borderBottom: '1px solid #1e2d45',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexShrink: 0,
+          }}>
+            <span style={{ fontFamily: 'monospace', fontWeight: 'bold', fontSize: '14px', color: timerWarning ? '#ef4444' : '#94a3b8' }}>
+              {timerDisplay}
+            </span>
+            <span style={{ fontSize: '11px', color: '#475569' }}>remaining</span>
+            {roundEnded && (
+              <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 'bold' }}>🔒 Round ended</span>
+            )}
+          </div>
+        )}
         <div className="px-3 py-2 text-sm font-semibold" style={{ background: '#0d1424', color: '#fbbf24', borderBottom: '1px solid #1e2d45' }}>
           Debugging challenges: {Math.min(2, Number(solvedProgress || 0))} / 2 solved
         </div>
