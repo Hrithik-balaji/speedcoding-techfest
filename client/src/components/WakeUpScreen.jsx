@@ -9,13 +9,37 @@ export default function WakeUpScreen({ onReady }) {
   const pingIntervalRef    = useRef(null);
   const elapsedIntervalRef = useRef(null);
   const readyTimeoutRef    = useRef(null);
-  // prevents double-fire if two in-flight pings both succeed
+  // Prevents double-fire if two in-flight pings both succeed.
   const doneRef = useRef(false);
+  // Stores the latest onReady so we call the current prop even if it changes,
+  // without re-running the ping effect.
+  const onReadyRef = useRef(onReady);
+  useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+
+  // Clear all intervals/timeouts when status reaches 'online'.
+  useEffect(() => {
+    if (status !== 'online') return;
+    if (pingIntervalRef.current)    clearInterval(pingIntervalRef.current);
+    if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current);
+  }, [status]);
+
+  // Global cleanup on unmount.
+  useEffect(() => {
+    return () => {
+      doneRef.current = true;
+      if (pingIntervalRef.current)    clearInterval(pingIntervalRef.current);
+      if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current);
+      if (readyTimeoutRef.current)    clearTimeout(readyTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
-    // In local dev the backend is always running — skip straight to the app
+    // In local dev the backend is always running — skip straight to the app.
     if (import.meta.env.DEV) {
-      onReady();
+      if (!doneRef.current) {
+        doneRef.current = true;
+        onReadyRef.current();
+      }
       return;
     }
 
@@ -35,7 +59,9 @@ export default function WakeUpScreen({ onReady }) {
           clearInterval(pingIntervalRef.current);
           clearInterval(elapsedIntervalRef.current);
           setStatus('online');
-          readyTimeoutRef.current = setTimeout(onReady, 800);
+          readyTimeoutRef.current = setTimeout(() => {
+            onReadyRef.current();
+          }, 800);
         }
       } catch {
         if (!doneRef.current) {
@@ -48,16 +74,9 @@ export default function WakeUpScreen({ onReady }) {
       }
     };
 
-    // Fire immediately, then every 3 s
+    // Fire immediately, then every 3 s.
     ping();
     pingIntervalRef.current = setInterval(ping, 3000);
-
-    return () => {
-      doneRef.current = true;
-      clearInterval(pingIntervalRef.current);
-      clearInterval(elapsedIntervalRef.current);
-      clearTimeout(readyTimeoutRef.current);
-    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatElapsed = (s) => {

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useState, useCallback } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ExamProvider } from './context/ExamContext';
@@ -38,10 +38,15 @@ function AppRoutes() {
 }
 
 export default function App() {
-  const [backendReady, setBackendReady] = useState(false);
+  const [showApp, setShowApp] = useState(false);
 
-  if (!backendReady) {
-    return <WakeUpScreen onReady={() => setBackendReady(true)} />;
+  // Stable reference — never recreated, so WakeUpScreen's effect never re-runs.
+  const handleReady = useCallback(() => {
+    setShowApp(true);
+  }, []);
+
+  if (!showApp) {
+    return <WakeUpScreen onReady={handleReady} />;
   }
 
   return (
