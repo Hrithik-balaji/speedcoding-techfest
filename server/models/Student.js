@@ -91,6 +91,10 @@ const StudentSchema = new mongoose.Schema({
   codingCompletedAt: { type: Date, default: null },
 
   // Final ranking
+  r1Score:           { type: Number, default: 0 },
+  r2Score:           { type: Number, default: 0 },
+  r3Score:           { type: Number, default: 0 },
+  totalScore:        { type: Number, default: 0 },
   totalTimeMs:       { type: Number, default: null },
   finalRank:         { type: Number, default: null },
 

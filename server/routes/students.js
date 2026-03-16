@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { protect } = require('../middleware/auth');
 const Student = require('../models/Student');
 const ExamState = require('../models/ExamState');
+const { calculateRankings } = require('./leaderboard');
 
 async function resetStudentsForRound(roundNumber) {
   const r = Number(roundNumber);
@@ -21,6 +22,10 @@ async function resetStudentsForRound(roundNumber) {
         debugSolvedIds: [],
         codingCompletedAt: null,
         codingSolvedCount: 0,
+        r1Score: 0,
+        r2Score: 0,
+        r3Score: 0,
+        totalScore: 0,
         totalTimeMs: null,
         finalRank: null,
         'r1.answers': {},
@@ -59,6 +64,8 @@ async function resetStudentsForRound(roundNumber) {
       {
         codingCompletedAt: null,
         codingSolvedCount: 0,
+        r3Score: 0,
+        totalScore: 0,
         totalTimeMs: null,
         finalRank: null,
       }
@@ -202,18 +209,25 @@ router.post('/me/mcq-submit', protect, async (req, res) => {
     student.r1.submitted  = true;
     student.r1.submitTime = new Date();
     student.mcqCompletedAt = new Date();
+    student.r1Score = student.mcqCorrectCount * 10;
+    student.totalScore =
+      Number(student.r1Score || 0) +
+      Number(student.r2Score || 0) +
+      Number(student.r3Score || 0);
 
     if (mcqCorrectCount >= 5) {
       student.currentRound = 2;
       student.eliminated = false;
       student.eliminatedReason = '';
       await student.save();
+      await calculateRankings();
       return res.json({ promoted: true, nextRound: 2 });
     }
 
     student.eliminated = true;
     student.eliminatedReason = 'Did not pass Round 1';
     await student.save();
+    await calculateRankings();
     res.json({ promoted: false, eliminated: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

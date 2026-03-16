@@ -4,6 +4,7 @@ const { adminProtect } = require('../middleware/auth');
 const Student = require('../models/Student');
 const Submission = require('../models/Submission');
 const ExamState = require('../models/ExamState');
+const { calculateRankings } = require('./leaderboard');
 
 // Generous rate limit for admin routes (keyed by user id, not raw IP)
 const adminLimiter = rateLimit({
@@ -141,9 +142,32 @@ router.patch('/students/:id/override', adminProtect, async (req, res) => {
       });
     };
 
-    if (r1Score !== undefined) { const v = Number(r1Score); log('R1 Score', student.r1.score, v); student.r1.score = v; student.overrides.set('r1Score', v); }
-    if (r2Score !== undefined) { const v = Number(r2Score); log('R2 Score', student.r2.score || 0, v); student.r2.score = v; student.overrides.set('r2Score', v); }
-    if (r3Score !== undefined) { const v = Number(r3Score); log('R3 Score', student.r3.score || 0, v); student.r3.score = v; student.overrides.set('r3Score', v); }
+    if (r1Score !== undefined) {
+      const v = Number(r1Score);
+      log('R1 Score', Number(student.r1Score ?? student.r1?.score ?? 0), v);
+      student.r1.score = v;
+      student.r1Score = v;
+      student.overrides.set('r1Score', v);
+    }
+    if (r2Score !== undefined) {
+      const v = Number(r2Score);
+      log('R2 Score', Number(student.r2Score ?? student.r2?.score ?? 0), v);
+      student.r2.score = v;
+      student.r2Score = v;
+      student.overrides.set('r2Score', v);
+    }
+    if (r3Score !== undefined) {
+      const v = Number(r3Score);
+      log('R3 Score', Number(student.r3Score ?? student.r3?.score ?? 0), v);
+      student.r3.score = v;
+      student.r3Score = v;
+      student.overrides.set('r3Score', v);
+    }
+
+    student.totalScore =
+      Number(student.r1Score || 0) +
+      Number(student.r2Score || 0) +
+      Number(student.r3Score || 0);
 
     student.overrideLog.push({
       changedAt: new Date(),
@@ -155,7 +179,10 @@ router.patch('/students/:id/override', adminProtect, async (req, res) => {
 
     await student.save();
     await state.save();
-    res.json(student);
+    await calculateRankings();
+
+    const updatedStudent = await Student.findById(student._id);
+    res.json({ success: true, student: updatedStudent, newRank: updatedStudent?.finalRank ?? null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -249,7 +276,7 @@ router.get('/scores', adminProtect, async (req, res) => {
     const contestStartTime = state.contestStartTime; // epoch ms or null
 
     const students = await Student.find().select(
-      '_id name rollNo currentRound eliminated terminated r1 r2 r3 mcqCorrectCount mcqCompletedAt debugSolvedCount debugCompletedAt codingSolvedCount codingCompletedAt totalTimeMs finalRank overrideLog'
+      '_id name rollNo currentRound eliminated terminated r1 r2 r3 r1Score r2Score r3Score totalScore mcqCorrectCount mcqCompletedAt debugSolvedCount debugCompletedAt codingSolvedCount codingCompletedAt totalTimeMs finalRank overrideLog'
     );
 
     function fmtMs(ms) {
@@ -279,13 +306,14 @@ router.get('/scores', adminProtect, async (req, res) => {
         terminated:       s.terminated,
         mcqCorrectCount:  s.mcqCorrectCount,
         mcqCompletedAt:   s.mcqCompletedAt,
-        r1Score:          s.r1?.score ?? 0,
+        r1Score:          Number(s.r1Score ?? s.r1?.score ?? 0),
         debugSolvedCount: s.debugSolvedCount,
         debugCompletedAt: s.debugCompletedAt,
-        r2Score:          s.r2?.score ?? 0,
+        r2Score:          Number(s.r2Score ?? s.r2?.score ?? 0),
         codingSolvedCount: s.codingSolvedCount,
         codingCompletedAt: s.codingCompletedAt,
-        r3Score:          s.r3?.score ?? 0,
+        r3Score:          Number(s.r3Score ?? s.r3?.score ?? 0),
+        totalScore:       Number(s.totalScore ?? 0),
         totalTimeMs:      s.totalTimeMs,
         finalRank:        s.finalRank,
         overrideLog:      s.overrideLog || [],

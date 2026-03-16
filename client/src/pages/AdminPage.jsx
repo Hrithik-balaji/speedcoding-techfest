@@ -178,6 +178,7 @@ export default function AdminPage() {
   const [timerStatus, setTimerStatus] = useState(null);
   const [roundStatus, setRoundStatus] = useState(null);
   const [finishers, setFinishers] = useState([]);
+  const [liveRankings, setLiveRankings] = useState([]);
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -365,7 +366,9 @@ export default function AdminPage() {
 
   const fetchFinishers = useCallback(async () => {
     const { data } = await api.get('/leaderboard');
-    setFinishers(Array.isArray(data) ? data : []);
+    const rows = Array.isArray(data) ? data : [];
+    setFinishers(rows);
+    setLiveRankings(rows);
     return data;
   }, []);
 
@@ -457,6 +460,13 @@ export default function AdminPage() {
     if (!isAdmin) return;
     if (activeMenu === 'scores') fetchScores();
   }, [activeMenu, fetchScores, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || activeMenu !== 'scores') return undefined;
+    fetchFinishers();
+    const id = setInterval(fetchFinishers, 15000);
+    return () => clearInterval(id);
+  }, [activeMenu, fetchFinishers, isAdmin]);
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -566,15 +576,21 @@ export default function AdminPage() {
 
     setOverrideSaving(true);
     try {
-      await api.patch(`/admin/students/${studentId}/override`, {
+      const { data } = await api.patch(`/admin/students/${studentId}/override`, {
         r1Score: r1,
         r2Score: r2,
         r3Score: r3,
       });
-      toast.success('Score overridden successfully');
+      const knownStudent = students.find((s) => s._id === studentId) || scoresData.find((s) => s._id === studentId);
+      const studentName = data?.student?.name || knownStudent?.name || 'Student';
+      const newRank = data?.newRank;
+      toast.success(`Scores updated for ${studentName} — new rank: ${newRank ? `#${newRank}` : '--'}`);
       setOverrideOpenId('');
-      await fetchStudents();
-      if (scoresLoaded) await fetchScores();
+      await Promise.all([
+        fetchStudents(),
+        fetchFinishers(),
+        scoresLoaded ? fetchScores() : Promise.resolve(),
+      ]);
     } catch {
       toast.error('Failed to override score');
     } finally {
@@ -969,7 +985,7 @@ export default function AdminPage() {
                     <td className="px-3 py-2">{f.rank}</td>
                     <td className="px-3 py-2">{f.name}</td>
                     <td className="px-3 py-2" style={{ color: COLORS.muted }}>{f.rollNo}</td>
-                    <td className="px-3 py-2 font-mono">{f.totalTimeFormatted}</td>
+                    <td className="px-3 py-2 font-mono">{f.totalTime || '--'}</td>
                   </tr>
                 ))}
                 {!finishers.length && (
@@ -1617,6 +1633,40 @@ export default function AdminPage() {
                 <Icon name="refresh" className={`w-3.5 h-3.5 ${scoresLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
+            </div>
+
+            <div className="rounded-xl border overflow-hidden mb-4" style={{ borderColor: COLORS.border }}>
+              <div className="px-3 py-2 text-xs font-semibold" style={{ background: '#0f172a', color: '#cbd5e1' }}>
+                Live Rankings (Top 5)
+              </div>
+              <div className="overflow-auto">
+                <table className="w-full text-sm min-w-[520px]">
+                  <thead style={{ background: 'rgba(15,23,42,0.75)' }}>
+                    <tr>
+                      {['Rank', 'Name', 'Total Score', 'Status'].map((h) => (
+                        <th key={h} className="text-left px-3 py-2 font-semibold" style={{ color: '#cbd5e1' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liveRankings.slice(0, 5).map((row) => (
+                      <tr key={`${row.rollNo}-${row.rank}`} className="border-t" style={{ borderColor: COLORS.border }}>
+                        <td className="px-3 py-2">#{row.rank}</td>
+                        <td className="px-3 py-2">{row.name}</td>
+                        <td className="px-3 py-2 font-semibold">{Number(row.totalScore || 0)}</td>
+                        <td className="px-3 py-2" style={{ color: COLORS.muted }}>{row.status}</td>
+                      </tr>
+                    ))}
+                    {!liveRankings.length && (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-4 text-center" style={{ color: COLORS.muted }}>
+                          No ranked students yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             {scoresLoading && !scoresData.length ? (

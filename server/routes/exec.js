@@ -6,6 +6,7 @@ const { DebugProblem, CodingProblem } = require('../models/Problem');
 const Submission = require('../models/Submission');
 const Student = require('../models/Student');
 const ExamState = require('../models/ExamState');
+const { calculateRankings } = require('./leaderboard');
 
 const JUDGE0_URL = process.env.JUDGE0_URL || 'https://ce.judge0.com';
 
@@ -53,16 +54,6 @@ function enforceCooldown(req, res) {
 
   lastSubmitTime.set(studentId, now);
   return true;
-}
-
-function applyRoundScore(student, roundNum, isCorrect) {
-  const delta = isCorrect ? 10 : -5;
-  if (roundNum === 2) {
-    student.r2.score = Number(student.r2.score || 0) + delta;
-  }
-  if (roundNum === 3) {
-    student.r3.score = Number(student.r3.score || 0) + delta;
-  }
 }
 
 const JUDGE0_STATUS = {
@@ -143,7 +134,6 @@ router.post('/run', protect, async (req, res) => {
       return res.status(400).json({ error: 'Java class must be named Solution' });
     }
 
-    const student = req.student;
     const result = await runCode(code, lang, stdin || '');
 
     let correct = false;
@@ -175,11 +165,6 @@ router.post('/run', protect, async (req, res) => {
           }
         }
       }
-    }
-
-    if (roundNum === 2 || roundNum === 3) {
-      applyRoundScore(student, roundNum, correct);
-      await student.save();
     }
 
     res.json({
@@ -236,6 +221,7 @@ router.post('/submit', protect, async (req, res) => {
     );
 
     let result, verdict, passedCount = 0, totalCount = 0, penaltyAdded = 0;
+    let scoreChanged = false;
 
     if (roundNum === 2) {
       // ── Debug submission ────────────────────────────────────
@@ -282,10 +268,13 @@ router.post('/submit', protect, async (req, res) => {
           student.currentRound = 3;
           student.debugCompletedAt = new Date();
         }
+
+        student.r2Score = Number(student.debugSolvedCount || 0) * 30;
+        student.r2.score = student.r2Score;
+        scoreChanged = true;
       }
 
       result = { stdout, stderr, compileErr };
-      applyRoundScore(student, 2, accepted);
 
     } else if (roundNum === 3) {
       // ── Coding submission ───────────────────────────────────
@@ -345,13 +334,26 @@ router.post('/submit', protect, async (req, res) => {
             student.totalTimeMs = Math.max(0, student.codingCompletedAt.getTime() - contestStartTime);
           }
         }
+
+        student.r3Score = 50;
+        student.r3.score = student.r3Score;
+        scoreChanged = true;
       }
 
       result = { tcResults };
-      applyRoundScore(student, 3, allPassed);
+    }
+
+    if (scoreChanged) {
+      student.totalScore =
+        Number(student.r1Score || 0) +
+        Number(student.r2Score || 0) +
+        Number(student.r3Score || 0);
     }
 
     await student.save();
+    if (scoreChanged) {
+      await calculateRankings();
+    }
 
     // Record submission
     const submission = await Submission.create({
