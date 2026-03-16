@@ -27,12 +27,6 @@ const authStudent = async (req, res, next) => {
 const authActiveStudent = async (req, res, next) => {
   try {
     await authStudent(req, res, async () => {
-      if (req.student?.codingCompletedAt) {
-        return res.status(403).json({
-          error: 'exam_completed',
-          message: 'You have already completed the exam',
-        });
-      }
       if (req.student?.terminated === true) {
         return res.status(403).json({
           error: 'terminated',

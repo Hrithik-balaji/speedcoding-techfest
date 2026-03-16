@@ -91,13 +91,20 @@ export function AuthProvider({ children }) {
     setLoading(true);
 
     refreshStudent()
-      .catch(() => {
-        localStorage.removeItem('sc_token');
-        localStorage.removeItem('sc_student');
-        localStorage.removeItem('terminated');
-        localStorage.removeItem('terminatedReason');
-        sessionStorage.removeItem('sc_terminated');
-        if (active) setStudent(null);
+      .catch((err) => {
+        const status = err?.response?.status;
+        if (status === 401) {
+          localStorage.removeItem('sc_token');
+          localStorage.removeItem('sc_student');
+          localStorage.removeItem('terminated');
+          localStorage.removeItem('terminatedReason');
+          sessionStorage.removeItem('sc_terminated');
+          if (active) setStudent(null);
+          return;
+        }
+
+        // Non-401 errors should not force logout/redirect.
+        console.warn('[AuthContext] refreshStudent failed without auth expiry:', status || 'network');
       })
       .finally(() => {
         if (active) setLoading(false);

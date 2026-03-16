@@ -36,6 +36,7 @@ const ExamStateSchema = new mongoose.Schema({
   currentRound:   { type: Number, default: 0 }, // 0 = not started
   roundActive:    { type: Boolean, default: false },
   roundStartedAt: { type: Date, default: null },
+  currentRoundEndsAt: { type: Date, default: null },
   roundEndedAt:   { type: Date, default: null },
   roundHistory: [{
     round: { type: Number },

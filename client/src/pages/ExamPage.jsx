@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useExam } from '../hooks/useExam';
@@ -9,7 +9,7 @@ import PausedOverlay from '../components/PausedOverlay';
 import TerminatedOverlay from '../components/TerminatedOverlay';
 import EliminatedOverlay from '../components/EliminatedOverlay';
 import MCQRound      from '../components/MCQRound';
-import api           from '../utils/api';
+import api, { BASE_URL } from '../utils/api';
 
 const CodingRound = lazy(() => import('../components/CodingRound'));
 const DebugRound  = lazy(() => import('../components/DebugRound'));
@@ -44,12 +44,117 @@ export default function ExamPage() {
   const [promotionCountdown, setPromotionCountdown] = useState(null);
   const [promotionTargetRound, setPromotionTargetRound] = useState(null);
   const [contestCompleted, setContestCompleted] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileReloadKey, setProfileReloadKey] = useState(0);
   const remainingRef = useRef(null);
   const fullscreenActive = useRef(false);
   const isTransitioning = useRef(false);
+  const startupGrace = useRef(true);
   const promotionTimeoutRef = useRef(null);
   const promotionIntervalRef = useRef(null);
   const fullscreenRetryRef = useRef(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      startupGrace.current = false;
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStudentProfile = async () => {
+      setProfileLoading(true);
+      setLoadError('');
+
+      const token = localStorage.getItem('sc_token');
+      if (!token) {
+        if (!cancelled) {
+          setProfileLoading(false);
+          setLoadError('Failed to load exam. Please refresh.');
+        }
+        return;
+      }
+
+      try {
+        const res = await fetch(`${BASE_URL}/api/students/me`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!res.ok) {
+          if (res.status === 401) {
+            // CASE B: token expired -> redirect to login
+            window.location.href = '/login';
+            return;
+          }
+          // Any other error -> show retry, not redirect
+          if (!cancelled) {
+            setLoadError('Failed to load exam. Please refresh.');
+            setProfileLoading(false);
+          }
+          return;
+        }
+
+        const data = await res.json();
+        const freshStudent = data?.student;
+
+        if (!freshStudent || typeof freshStudent !== 'object') {
+          // Unexpected response -> show retry, not redirect
+          if (!cancelled) {
+            setLoadError('Failed to load exam. Please refresh.');
+            setProfileLoading(false);
+          }
+          return;
+        }
+
+        if (cancelled) return;
+
+        setStudent(freshStudent);
+        localStorage.setItem('sc_student', JSON.stringify(freshStudent));
+
+        // CASE A: terminated student (after reinstate check in backend/profile polling)
+        if (freshStudent.terminated === true) {
+          setProfileLoading(false);
+          return;
+        }
+
+        // CASE C: exam explicitly completed
+        if (
+          freshStudent.codingCompletedAt &&
+          Number(freshStudent.currentRound || 0) === 3 &&
+          Number(freshStudent.codingSolvedCount || 0) >= 1
+        ) {
+          sessionStorage.setItem('exitReason', 'completed');
+          sessionStorage.setItem('exitMessage', 'Your exam has already been completed.');
+          window.location.href = '/login';
+          return;
+        }
+
+        // CASE D: student eliminated
+        if (freshStudent.eliminated === true) {
+          setProfileLoading(false);
+          return;
+        }
+
+        setProfileLoading(false);
+      } catch {
+        // Network error -> show retry, not redirect
+        if (!cancelled) {
+          setLoadError('Failed to load exam. Please refresh.');
+          setProfileLoading(false);
+        }
+      }
+    };
+
+    loadStudentProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, [setStudent, profileReloadKey]);
 
   const formatMs = (ms) => {
     if (ms === null) return '--:--';
@@ -91,26 +196,30 @@ export default function ExamPage() {
     }
   };
 
-  // Poll /api/timer every 10 s — drives the sticky bar
+  const fetchTimerStatus = useCallback(async () => {
+    try {
+      const { data } = await api.get('/timer/status');
+      const isPaused = !!data.paused;
+      const ms = data.remainingMs === null || data.remainingMs === undefined
+        ? null
+        : Math.max(0, Number(data.remainingMs) || 0);
+      setTimerPaused(isPaused);
+      remainingRef.current = ms;
+      setDisplayMs(ms);
+      if (ms !== null && ms <= 0) setRoundEnded(true);
+    } catch (err) {
+      console.warn('Timer fetch failed:', err);
+    }
+  }, []);
+
+  // Poll /api/timer/status every 10 s for all active rounds
   useEffect(() => {
-    if (!examStarted) return;
-    const poll = async () => {
-      try {
-        const { data } = await api.get('/timer/status');
-        const isPaused = !!data.paused;
-        const ms = data.remainingMs === null || data.remainingMs === undefined
-          ? null
-          : Math.max(0, Number(data.remainingMs) || 0);
-        setTimerPaused(isPaused);
-        remainingRef.current = ms;
-        setDisplayMs(ms);
-        if (ms !== null && ms <= 0) setRoundEnded(true);
-      } catch {}
-    };
-    poll();
-    const id = setInterval(poll, 10000);
+    if (!examStarted || !examReady || Number(currentRound || 0) < 1) return;
+
+    fetchTimerStatus();
+    const id = setInterval(fetchTimerStatus, 10000);
     return () => clearInterval(id);
-  }, [examStarted, currentRound]);
+  }, [examStarted, examReady, currentRound, fetchTimerStatus]);
 
   // 1 s local countdown between polls
   useEffect(() => {
@@ -129,8 +238,12 @@ export default function ExamPage() {
   useEffect(() => {
     remainingRef.current = null;
     setDisplayMs(null);
+    setTimerPaused(false);
     setRoundEnded(false);
-  }, [currentRound]);
+    if (examStarted && examReady && Number(currentRound || 0) >= 1) {
+      fetchTimerStatus();
+    }
+  }, [currentRound, examStarted, examReady, fetchTimerStatus]);
 
   console.log('[ExamPage] Rendering, currentRound:', currentRound, '| examStarted:', examStarted);
 
@@ -141,6 +254,7 @@ export default function ExamPage() {
   } = useSecurity({
     enabled: examReady && Number(currentRound || 0) >= 1,
     isTransitioning,
+    startupGrace,
   });
 
   useEffect(() => {
@@ -254,19 +368,15 @@ export default function ExamPage() {
 
   const handleBeginExam = async () => {
     sessionStorage.removeItem('sc_terminated');
+    setLoadError('');
     setExamReady(false);
-    setProfileConfirmed(false);
+    setProfileConfirmed(true);
     setContestCompleted(false);
     await requestExamFullscreen();
     setShowRules(false);
+    setExamReady(true);
     setExamStarted(true);
-    try {
-      await refreshStudent?.();
-      setProfileConfirmed(true);
-    } catch {
-      setProfileConfirmed(false);
-    }
-    await loadProblems();
+    navigate('/exam', { replace: true });
   };
 
   const handleRoundSwitch = async (r) => {
@@ -314,13 +424,39 @@ export default function ExamPage() {
     navigate('/', { replace: true });
   };
 
+  if (profileLoading || (!student && !loadError)) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-[#020617] text-slate-200">
+        Loading exam...
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-[#020617] px-6">
+        <div className="w-full max-w-md rounded-xl border border-red-500/30 bg-red-950/30 p-6 text-center">
+          <h2 className="text-lg font-semibold text-red-200">Unable to load exam</h2>
+          <p className="mt-2 text-sm text-red-100/90">{loadError}</p>
+          <button
+            type="button"
+            className="mt-5 rounded-lg bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600"
+            onClick={() => setProfileReloadKey((k) => k + 1)}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!student) return null;
 
   if (student?.eliminated) {
     return <EliminatedOverlay round={student.currentRound || 1} />;
   }
 
-  if (examReady && student?.terminated) {
+  if (student?.terminated) {
     return <TerminatedOverlay reason={student.terminatedReason} violationCount={student.violationCount} />;
   }
 
@@ -367,7 +503,7 @@ export default function ExamPage() {
 
       {/* Main content */}
       {/* Sticky timer bar — only shown once exam begins */}
-      {examStarted && (
+      {examStarted && examReady && Number(currentRound || 0) >= 1 && (
         <div
           className="flex items-center justify-center gap-3 py-1.5 flex-shrink-0 z-40"
           style={{

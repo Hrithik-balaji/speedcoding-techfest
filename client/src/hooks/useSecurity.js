@@ -4,9 +4,9 @@
 // DOES NOTHING: clicking screen, window focus/blur without alt, visibility change
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import api from '../utils/api';
+import { BASE_URL } from '../utils/api';
 
-export function useSecurity({ enabled, isTransitioning }) {
+export function useSecurity({ enabled, isTransitioning, startupGrace }) {
   const [isTerminated, setIsTerminated] = useState(false);
   const [violationCount, setViolationCount] = useState(0);
   const [securityActive, setSecurityActive] = useState(false);
@@ -14,51 +14,67 @@ export function useSecurity({ enabled, isTransitioning }) {
   const isTerminatedRef = useRef(false);
   const altPressed = useRef(false);
   const securityActivated = useRef(false);
+  const securityActiveRef = useRef(false);
   const detachRef = useRef(() => {});
 
-  const detach = useCallback(() => {
+  const removeAllListeners = useCallback(() => {
     detachRef.current();
   }, []);
 
   const reportViolation = useCallback(async (type, description) => {
     if (isTerminatedRef.current) return;
+    if (startupGrace?.current) return;
     if (isTransitioning?.current) return;
-    console.log('[Security] Reporting violation:', type);
+
     try {
-      const { data } = await api.post('/students/me/violation', {
-        type,
-        description,
-        timestamp: new Date().toISOString(),
+      const token = localStorage.getItem('sc_token');
+      const res = await fetch(`${BASE_URL}/api/students/me/violation`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          type,
+          description,
+          timestamp: new Date().toISOString(),
+        }),
       });
-      console.log('[Security] Violation response:', data);
-      const count = Number(data?.violationCount || 0);
-      setViolationCount(count);
+
+      if (!res.ok) {
+        // Server error/rate-limit/auth issue -> do not terminate or redirect here.
+        console.warn('Violation report failed:', res.status);
+        return;
+      }
+
+      const data = await res.json();
+      setViolationCount(Number(data?.violationCount || 0));
 
       if (data?.terminated === true) {
         isTerminatedRef.current = true;
         setIsTerminated(true);
-        detach();
+        setSecurityActive(false);
+        removeAllListeners();
+        sessionStorage.setItem('exitReason', 'terminated');
+        sessionStorage.setItem('exitMessage', 'You were removed for a violation.');
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 3000);
       }
+      // terminated=false means warning only.
     } catch (err) {
-      console.log('[Security] Violation request error:', err?.response?.status, err?.message);
-      if (err?.response?.status === 403) {
-        isTerminatedRef.current = true;
-        setIsTerminated(true);
-        detach();
-      }
+      // Network error -> do not terminate.
+      console.warn('Could not report violation:', err);
     }
-  }, [detach, isTransitioning]);
+  }, [isTransitioning, removeAllListeners, startupGrace]);
 
   useEffect(() => {
     if (isTerminatedRef.current) return;
 
     const opts = { capture: true };
     let listenersAttached = false;
+    let fullscreenGraceTimer = null;
 
-    // --- TERMINATION TRIGGERS ---
-
-    // Keydown — added to BOTH window AND document (capture) so Monaco cannot block it.
-    // stopImmediatePropagation on ESC prevents both from double-firing in the normal case.
     const onKeyDown = (e) => {
       const k = e.key;
       const code = e.code;
@@ -68,7 +84,6 @@ export function useSecurity({ enabled, isTransitioning }) {
         altPressed.current = true;
       }
 
-      // ESC — terminate. Use stopImmediatePropagation to prevent editor from handling it.
       if (k === 'Escape' || code === 'Escape') {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -76,73 +91,72 @@ export function useSecurity({ enabled, isTransitioning }) {
         return;
       }
 
-      // --- SILENT BLOCKS (no violation, no termination) ---
-
       if (k === 'F12') { e.preventDefault(); return; }
 
-      // Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C — DevTools
       if (ctrlOrMeta && e.shiftKey && ['i', 'I', 'j', 'J', 'c', 'C'].includes(k)) {
         e.preventDefault();
         return;
       }
 
-      // Ctrl+U, Ctrl+S, Ctrl+A
       if (ctrlOrMeta && ['u', 'U', 's', 'S', 'a', 'A'].includes(k)) {
         e.preventDefault();
         return;
       }
 
-      // Ctrl+C, Ctrl+V, Ctrl+X
       if (ctrlOrMeta && ['c', 'C', 'v', 'V', 'x', 'X'].includes(k)) {
         e.preventDefault();
-        return;
       }
     };
 
-    // Reset altPressed on ANY keyup — prevents stuck state if Alt released outside window
     const onKeyUp = () => {
       altPressed.current = false;
     };
 
-    // Alt+Tab — only terminate if Alt was pressed before blur
     const onBlur = () => {
+      if (startupGrace?.current) return;
       if (isTransitioning?.current) return;
+      if (!securityActiveRef.current) return;
+
       if (altPressed.current) {
         altPressed.current = false;
         reportViolation('alt_tab', 'Student used Alt+Tab to switch away');
       }
     };
 
-    let fullscreenGraceTimer = null;
-
     const onFullscreenChange = () => {
+      // Never fire during startup grace period.
+      if (startupGrace?.current) return;
+      // Never fire during transitions.
+      if (isTransitioning?.current) return;
+      // Never fire if security not active yet.
+      if (!securityActiveRef.current) return;
+
       if (fullscreenGraceTimer) {
         clearTimeout(fullscreenGraceTimer);
         fullscreenGraceTimer = null;
       }
 
-      if (isTransitioning?.current) return;
-      if (!document.fullscreenElement && securityActivated.current) {
+      if (!document.fullscreenElement) {
         fullscreenGraceTimer = setTimeout(() => {
-          if (!document.fullscreenElement && !isTransitioning?.current) {
+          if (
+            !document.fullscreenElement &&
+            !startupGrace?.current &&
+            !isTransitioning?.current
+          ) {
             reportViolation('fullscreen_exit', 'Student exited fullscreen');
           }
-        }, 1000);
+        }, 1500);
       }
     };
 
-    // Right click — block only, no violation
     const onContextMenu = (e) => { e.preventDefault(); };
-
-    // Copy / Cut / Paste — block only, no violation
-    const onCopy  = (e) => { e.preventDefault(); };
-    const onCut   = (e) => { e.preventDefault(); };
+    const onCopy = (e) => { e.preventDefault(); };
+    const onCut = (e) => { e.preventDefault(); };
     const onPaste = (e) => { e.preventDefault(); };
 
     const attachListeners = () => {
       if (listenersAttached || isTerminatedRef.current) return;
 
-      // Keydown on BOTH window AND document — defense in depth against editor interception
       window.addEventListener('keydown', onKeyDown, opts);
       document.addEventListener('keydown', onKeyDown, opts);
       window.addEventListener('keyup', onKeyUp, opts);
@@ -152,7 +166,9 @@ export function useSecurity({ enabled, isTransitioning }) {
       document.addEventListener('copy', onCopy, opts);
       document.addEventListener('cut', onCut, opts);
       document.addEventListener('paste', onPaste, opts);
+
       listenersAttached = true;
+      securityActiveRef.current = true;
       setSecurityActive(true);
     };
 
@@ -167,9 +183,10 @@ export function useSecurity({ enabled, isTransitioning }) {
         }, 3000)
       : null;
 
-    // Cleanup removes listeners only if this effect attached them.
     const cleanup = () => {
       if (activationTimer) clearTimeout(activationTimer);
+      if (fullscreenGraceTimer) clearTimeout(fullscreenGraceTimer);
+
       if (listenersAttached) {
         window.removeEventListener('keydown', onKeyDown, opts);
         document.removeEventListener('keydown', onKeyDown, opts);
@@ -181,8 +198,9 @@ export function useSecurity({ enabled, isTransitioning }) {
         document.removeEventListener('cut', onCut, opts);
         document.removeEventListener('paste', onPaste, opts);
       }
-      if (fullscreenGraceTimer) clearTimeout(fullscreenGraceTimer);
+
       listenersAttached = false;
+      securityActiveRef.current = false;
       if (isTerminatedRef.current || !enabled) {
         setSecurityActive(false);
       }
@@ -194,7 +212,7 @@ export function useSecurity({ enabled, isTransitioning }) {
       cleanup();
       detachRef.current = () => {};
     };
-  }, [enabled, isTransitioning, reportViolation]);
+  }, [enabled, isTransitioning, reportViolation, startupGrace]);
 
   return { isTerminated, violationCount, securityActive };
 }

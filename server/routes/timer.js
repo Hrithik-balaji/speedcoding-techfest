@@ -33,6 +33,9 @@ function clearAutoEndTimer(round) {
 
 function setRoundEndTime(state, round, endsAt) {
   state[endsAtField(round)] = endsAt;
+  if (Number(state.currentRound || 0) === round) {
+    state.currentRoundEndsAt = endsAt;
+  }
   state.roundEndTimes = {
     ...(state.roundEndTimes || {}),
     [roundKey(round)]: endsAt ? endsAt.getTime() : null,
@@ -60,10 +63,11 @@ function hasRoundStarted(state, round) {
 function currentRoundEndsAt(state) {
   const round = Number(state?.currentRound || 0);
   if (![1, 2, 3].includes(round)) return null;
-  return state?.[endsAtField(round)] || null;
+  return state?.currentRoundEndsAt || state?.[endsAtField(round)] || null;
 }
 
 function computeRemainingMs(state) {
+  if (!state?.roundActive) return null;
   const endsAt = currentRoundEndsAt(state);
   if (!endsAt) return null;
   const now = state?.paused && state?.pausedAt
@@ -188,6 +192,7 @@ router.post('/start-round', adminProtect, async (_req, res) => {
     state.pausedAt = null;
     state.roundStartedAt = startedAt;
     state.roundEndedAt = null;
+    state.currentRoundEndsAt = endsAt;
     setRoundEndTime(state, round, endsAt);
     setForceEnded(state, round, false);
     state.roundHistory.push({ round, startedAt, endedAt: null, restartedAt: null });
@@ -240,6 +245,7 @@ router.post('/next-round', adminProtect, async (_req, res) => {
     state.roundEndedAt = currentRound > 0 ? new Date() : null;
     state.currentRound = Math.max(1, currentRound + 1);
     state.roundStartedAt = null;
+    state.currentRoundEndsAt = state[endsAtField(state.currentRound)] || null;
     await state.save();
 
     res.json(buildTimerStatus(state));
@@ -269,6 +275,7 @@ router.post('/restart-round', adminProtect, async (req, res) => {
     state.pausedAt = null;
     state.roundStartedAt = null;
     state.roundEndedAt = null;
+    state.currentRoundEndsAt = null;
     setRoundEndTime(state, round, null);
     setForceEnded(state, round, false);
     state.roundHistory.push({ round, startedAt: null, endedAt: null, restartedAt: new Date() });
@@ -358,6 +365,7 @@ router.post('/reset', adminProtect, async (_req, res) => {
     state.pausedAt = null;
     state.roundStartedAt = null;
     state.roundEndedAt = null;
+    state.currentRoundEndsAt = null;
     state.roundHistory = [];
     setRoundEndTime(state, 1, null);
     setRoundEndTime(state, 2, null);
