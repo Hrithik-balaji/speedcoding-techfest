@@ -49,6 +49,8 @@ export default function ExamPage() {
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileReloadKey, setProfileReloadKey] = useState(0);
   const remainingRef = useRef(null);
+  const timerPausedRef = useRef(false);
+  const fetchTimerRef = useRef(null);
   const fullscreenActive = useRef(false);
   const isTransitioning = useRef(false);
   const startupGrace = useRef(true);
@@ -205,6 +207,7 @@ export default function ExamPage() {
         ? null
         : Math.max(0, Number(data.remainingMs) || 0);
       setTimerPaused(isPaused);
+      timerPausedRef.current = isPaused;
       remainingRef.current = ms;
       setDisplayMs(ms);
       if (ms !== null && ms <= 0) setRoundEnded(true);
@@ -213,27 +216,55 @@ export default function ExamPage() {
     }
   }, []);
 
+  useEffect(() => {
+    fetchTimerRef.current = fetchTimerStatus;
+  }, [fetchTimerStatus]);
+
+  useEffect(() => {
+    timerPausedRef.current = timerPaused;
+  }, [timerPaused]);
+
   // Poll /api/timer/status every 10 s for all active rounds
   useEffect(() => {
     if (!examStarted || !examReady || Number(currentRound || 0) < 1) return;
 
-    fetchTimerStatus();
-    const id = setInterval(fetchTimerStatus, 10000);
+    fetchTimerRef.current?.();
+    const id = setInterval(() => {
+      fetchTimerRef.current?.();
+    }, 10000);
     return () => clearInterval(id);
-  }, [examStarted, examReady, currentRound, fetchTimerStatus]);
+  }, [examStarted, examReady, currentRound]);
 
   // 1 s local countdown between polls
   useEffect(() => {
     if (!examStarted) return;
     const id = setInterval(() => {
-      if (timerPaused || remainingRef.current === null) return;
+      if (timerPausedRef.current || remainingRef.current === null) return;
       const next = Math.max(0, remainingRef.current - 1000);
       remainingRef.current = next;
       setDisplayMs(next);
       if (next <= 0) setRoundEnded(true);
     }, 1000);
     return () => clearInterval(id);
-  }, [examStarted, timerPaused]);
+  }, [examStarted]);
+
+  useEffect(() => {
+    if (!examStarted) return;
+    if (Number(currentRound || 0) < 1) return;
+    loadProblems?.();
+  }, [examStarted, currentRound, loadProblems]);
+
+  useEffect(() => {
+    if (!examStarted) {
+      sessionStorage.removeItem('sc_exam_ready');
+      return;
+    }
+    if (!examReady) {
+      sessionStorage.removeItem('sc_exam_ready');
+      return;
+    }
+    sessionStorage.setItem('sc_exam_ready', '1');
+  }, [examStarted, examReady]);
 
   // Reset timer display when the active round changes
   useEffect(() => {
@@ -329,6 +360,8 @@ export default function ExamPage() {
   useEffect(() => {
     if (!isTerminated) return;
 
+    sessionStorage.removeItem('sc_exam_started');
+    sessionStorage.removeItem('sc_exam_ready');
     setExamStarted(false);
     setRoundEnded(false);
     setDisplayMs(null);
@@ -342,6 +375,8 @@ export default function ExamPage() {
 
   useEffect(() => {
     if (!student?.terminated && !student?.eliminated) return;
+    sessionStorage.removeItem('sc_exam_started');
+    sessionStorage.removeItem('sc_exam_ready');
     exitExamFullscreen();
   }, [student?.terminated, student?.eliminated]);
 
@@ -369,6 +404,7 @@ export default function ExamPage() {
 
   const handleBeginExam = async () => {
     sessionStorage.removeItem('sc_terminated');
+    sessionStorage.setItem('sc_exam_started', '1');
     setLoadError('');
     setExamReady(false);
     setProfileConfirmed(true);
@@ -419,6 +455,8 @@ export default function ExamPage() {
 
   const handleLogout = () => {
     sessionStorage.removeItem('sc_terminated');
+    sessionStorage.removeItem('sc_exam_started');
+    sessionStorage.removeItem('sc_exam_ready');
     setProfileConfirmed(false);
     exitExamFullscreen();
     logout();

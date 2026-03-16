@@ -44,11 +44,22 @@ app.get('/api/ping', (req, res) => {
 // ── Admin routes get their own generous limiter — mounted BEFORE the global one
 app.use('/api/admin',       require('./routes/admin'));
 
+const timerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  keyGenerator: (req) => req.ip,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/timer', timerLimiter);
+
 // ── Rate Limiting (all other /api/* routes) ───────────────────
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 500,
+  max: 2000,
   message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use('/api/', apiLimiter);
 

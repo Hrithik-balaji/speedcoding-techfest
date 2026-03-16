@@ -115,12 +115,19 @@ export function AuthProvider({ children }) {
     };
   }, [refreshStudent]);
 
-  // Heartbeat every 30s
+  // Heartbeat every 60s during active exam sessions only.
   useEffect(() => {
     if (!student) return;
-    const id = setInterval(() => {
+
+    const sendHeartbeatIfActive = () => {
+      const examStarted = sessionStorage.getItem('sc_exam_started') === '1';
+      const examReady = sessionStorage.getItem('sc_exam_ready') === '1';
+      if (!examStarted || !examReady) return;
       api.patch('/students/me/heartbeat').catch(() => {});
-    }, 30000);
+    };
+
+    sendHeartbeatIfActive();
+    const id = setInterval(sendHeartbeatIfActive, 60000);
     return () => clearInterval(id);
   }, [student]);
 

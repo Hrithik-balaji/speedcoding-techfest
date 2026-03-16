@@ -47,7 +47,7 @@ export function ExamProvider({ children }) {
     setProblemsLoading(false);
   }, []);
 
-  // Poll timer state from server every 3s
+  // Poll timer state from server.
   const pollTimer = useCallback(async () => {
     try {
       const { data } = await api.get('/timer');
@@ -63,14 +63,20 @@ export function ExamProvider({ children }) {
     } catch {}
   }, [currentRound]);
 
-  // Start polling
+  // Start polling only while the exam is actively running in the current tab.
   useEffect(() => {
     if (!student) return;
-    loadProblems();
-    pollTimer();
-    pollRef.current = setInterval(pollTimer, 3000);
+
+    const pollIfActive = () => {
+      const examStarted = sessionStorage.getItem('sc_exam_started') === '1';
+      if (!examStarted) return;
+      pollTimer();
+    };
+
+    pollIfActive();
+    pollRef.current = setInterval(pollIfActive, 10000);
     return () => clearInterval(pollRef.current);
-  }, [student, pollTimer, loadProblems]);
+  }, [student, pollTimer]);
 
   useEffect(() => {
     if (!student) return;
